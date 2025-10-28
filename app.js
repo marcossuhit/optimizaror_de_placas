@@ -7989,6 +7989,9 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
   const placements = plate.getPlacedPiecesWithCoords();
   if (!Array.isArray(placements) || placements.length === 0) return null;
 
+  // La lógica: 0 si hay V*, sino usa el valor de entrada del usuario
+  const userRefilo = Number(uiTrim.mm); // Convertimos el valor de entrada
+
   // --- Helper Functions and Constants ---
   function numbersAlmostEqual(a, b, tolerance = 0.01) { return Math.abs(Number(a) - Number(b)) < tolerance; }
   const WIDTH_TOLERANCE = 0.05;
@@ -8059,28 +8062,26 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           const uniformHeight = potentialSobranteFranja.placements.every(p => numbersAlmostEqual(p.height, potentialAnchoU, WIDTH_TOLERANCE));
           const potentialCortesV = potentialSobranteFranja.placements.map(p => p.width);
 
-          // Si no tiene altura uniforme o piezas válidas, no puede ser parte de NINGUNA cadena de sobrante.
           if (!uniformHeight || potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
-              break; // Rompe la cadena de búsqueda
+              break; 
           }
           
           const isFirstSobrante = (combinedCortesV.length === 0);
 
           if (isFirstSobrante) {
               // --- LÓGICA PARA EL *PRIMER* SOBRANTE ---
-              
+              const similarLargo = numbersAlmostEqual(franja.largo, potentialSobranteFranja.largo, WIDTH_TOLERANCE);
               const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
               const expectedY = lastProcessedBottomY + kerfValue;
               const startsBelow = firstPieceY !== undefined &&
                   (firstPieceY >= lastProcessedBottomY - kerfValue && firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
 
-              if (similarX && startsBelow) {
+              if (!similarLargo && similarX && startsBelow) {
                   // Es el primer sobrante V* válido
                   firstSobranteAnchoU = potentialAnchoU;
                   firstSobranteY = firstPieceY; 
                   combinedCortesV.push(...potentialCortesV);
                   potentialSobranteFranja.isSobrante = true; 
-                  // Actualizamos el 'bottomY' para apilamiento VERTICAL
                   lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
                                          potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
                   continue; 
@@ -8107,7 +8108,7 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
                   continue; 
               }
 
-              // OPCIÓN 2: Agrupado Horizontalmente (MISMA CORRECCIÓN QUE ANTES)
+              // OPCIÓN 2: Agrupado Horizontalmente 
               const startsAtSameY_Horizontal = numbersAlmostEqual(firstSobranteY, firstPieceY, POSITION_TOLERANCE);
 
               if (startsAtSameY_Horizontal) {
@@ -8131,12 +8132,33 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           };
       }
 
+      // Lógica: emitir RU después de X solo si los U siguientes NO están seguidos inmediatamente por un V*
+      let phaseRefiloU = 0;
+      
+      if (Array.isArray(cortesU) && cortesU.length > 0) {
+        // Si hay piezas U en esta franja (y no es una franja marcada como sobrante), aplicamos el refilo del usuario.
+        phaseRefiloU = userRefilo;
+        console.log(`[CNC-LOG] Fase ${i}: Con cortes U | EMITE RU con userRefilo`);
+      } else {
+        // No hay cortes U relevantes en esta fase.
+        phaseRefiloU = 0;
+        console.log(`[CNC-LOG] Fase ${i}: Sin cortes U | NO RU`);
+      }
+
+      console.log(`[CNC-LOG] Fase ${i} FINAL:`, {
+        kind: 'horizontal',
+        largo: franja.largo,
+        cantidad: 1,
+        refiloU: phaseRefiloU,
+        cortesU: cortesU,
+        sobrante: sobranteData
+      });
+
       finalPhases.push({
           kind: 'horizontal',
           largo: franja.largo,
           cantidad: 1,
-          // *** CAMBIO CRÍTICO: refiloU ya no depende de la existencia de sobrante ***
-          refiloU: 5.0, 
+          refiloU: phaseRefiloU,
           cortesU: cortesU,
           sobrante: sobranteData
       });
