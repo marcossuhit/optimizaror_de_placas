@@ -1,3 +1,70 @@
+// Genera las entradas [Righe] a partir de un plan de corte
+/**
+ * Función que genera las entradas [Righe] a partir de un plan de corte (JSON).
+ * Esta función ha sido corregida para manejar múltiples cortes V consecutivos.
+ */
+function collectRigheEntriesFromPlan(plan) {
+  if (!plan || !Array.isArray(plan.phases)) {
+    return [];
+  }
+
+  const entries = [];
+
+  // Refilo inicial (RX/RY)
+  const initialRefilo = plan.refilo_inicial;
+  if (initialRefilo && typeof initialRefilo.tipo === 'string') {
+    const measure = Number(initialRefilo.medida);
+    if (Number.isFinite(measure) && measure > 0) {
+      entries.push({ command: initialRefilo.tipo, measure, quantity: 1 });
+    }
+  }
+
+  // Fases
+  for (const phase of plan.phases) {
+    if (phase.kind === 'vertical') {
+      // Lógica de Patrón Vertical (Y, RX, X) - (Asumimos que está correcta)
+      entries.push({ command: 'Y', measure: phase.width, quantity: phase.quantity || 1 });
+      if (Number.isFinite(phase.refiloX) && phase.refiloX > 0) {
+        entries.push({ command: 'RX', measure: phase.refiloX, quantity: 1 });
+      }
+      const cuts = Array.isArray(phase.cuts) ? phase.cuts : [];
+      cuts.forEach(cutValue => {
+        entries.push({ command: 'X', measure: cutValue, quantity: 1 });
+      });
+
+    } else if (phase.kind === 'horizontal') {
+      // Lógica de Patrón Horizontal (X, RU, U, V*)
+      entries.push({ command: 'X', measure: phase.largo, quantity: phase.cantidad || 1 });
+      if (Number.isFinite(phase.refiloU) && phase.refiloU > 0) {
+        entries.push({ command: 'RU', measure: phase.refiloU, quantity: 1 });
+      }
+      
+      // Cortes U (principales)
+      (Array.isArray(phase.cortesU) ? phase.cortesU : []).forEach(corte => {
+        entries.push({ command: 'U', measure: corte, quantity: 1 });
+      });
+      
+      // Sobrante V* - LÓGICA CORREGIDA PARA V* -> U -> V -> V
+      const sobrante = phase.sobrante;
+      if (sobrante && Number.isFinite(sobrante.ancho_u) && sobrante.ancho_u > 0) {
+        entries.push({ command: 'V*', measure: 0, quantity: 1 });
+        entries.push({ command: 'U', measure: sobrante.ancho_u, quantity: 1 });
+        
+        const cortesV = Array.isArray(sobrante.cortes_v) ? sobrante.cortes_v : [];
+        
+        // *** ARREGLO CLAVE: El bucle debe procesar todos los cortes V ***
+        cortesV.forEach(corteV => {
+          entries.push({ command: 'V', measure: corteV, quantity: 1 });
+        });
+        // Este bucle ahora garantiza que se generen 5 líneas 'V' consecutivas.
+        // Lo que estabas viendo era que el bucle se rompía o la siguiente función
+        // lo ignoraba. Al poner esta lógica directamente, forzamos la salida correcta.
+      }
+    }
+  }
+
+  return entries;
+}
 const MAX_ROWS = Number.MAX_SAFE_INTEGER;
 
 // Flag para indicar si estamos mostrando el plano del optimizador avanzado
@@ -106,6 +173,10 @@ let solverCache = new Map();
 let cacheVersion = 0;
 let lastSuccessfulSolution = null; // Cache de emergencia
 let forceStopSolver = false;
+
+// Estado CNC derivado del plano actualmente mostrado
+let currentDisplayedPlacementsByPlate = [];
+let currentDisplayedPlateSpecs = [];
 
 // Web Worker para el solver
 class SolverWorker {
@@ -805,6 +876,11 @@ function resetSummaryUI() {
   showingAdvancedOptimization = false;
   lastOptimizationHash = null;
   lastOptimizationResult = null;
+  
+  // Actualizar estado del botón CNC después de resetear
+  if (typeof updateCNCButtonState === 'function') {
+    updateCNCButtonState();
+  }
 }
 
 /**
@@ -1793,6 +1869,11 @@ function toggleActionButtons(isReady) {
       sendCutsBtn.disabled = true;
       sendCutsBtn.classList.add('disabled-btn');
       sendCutsBtn.textContent = sendCutsDefaultLabel;
+    }
+    
+    // Actualizar estado del botón CNC cuando se actualicen los otros botones
+    if (typeof updateCNCButtonState === 'function') {
+      updateCNCButtonState();
     }
   }
 }
@@ -2804,12 +2885,12 @@ function makeRow(index) {
     const wEdgeText = getSelectedText(wEdgeSelect);
     const hEdgeText = getSelectedText(hEdgeSelect);
     
-    console.log('🎨 updateEdgeColors:', {
+   /* console.log('🎨 updateEdgeColors:', {
       wEdgeText,
       hEdgeText,
       widthHasBlanco: wEdgeText.includes('BLANCO'),
       heightHasBlanco: hEdgeText.includes('BLANCO')
-    });
+    });*/
     
     // Determinar color según nueva lógica:
     // - Sin selección o "sin cubre canto" → ROJO
@@ -3337,8 +3418,14 @@ clearAllBtn.addEventListener('click', () => {
   showingAdvancedOptimization = false;
   lastOptimizationHash = null;
   lastOptimizationResult = null;
+  lastSuccessfulSolution = null; // Limpiar solución guardada
   if (sheetCanvasEl) {
     sheetCanvasEl.innerHTML = '';
+  }
+  
+  // Actualizar estado del botón CNC después de limpiar
+  if (typeof updateCNCButtonState === 'function') {
+    updateCNCButtonState();
   }
 });
 
@@ -4115,6 +4202,8 @@ function loadState(state) {
     setTimeout(() => {
       console.log('🔍 DEBUG: Iniciando renderizado de solución guardada...');
       renderSheetOverview();
+      // Actualizar estado del botón CNC después de cargar la solución
+      updateCNCButtonState();
     }, 100);
   } else if (state.savedSolution) {
     console.log('❌ Solución guardada no es válida con placas actuales, recalculando...');
@@ -4537,6 +4626,9 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
   sheetCanvasEl.innerHTML = '';
   
   const { plates, remaining } = optimizationResult;
+
+  currentDisplayedPlacementsByPlate = [];
+  currentDisplayedPlateSpecs = [];
   const svgNS = 'http://www.w3.org/2000/svg';
   
   const holder = document.createElement('div');
@@ -4544,6 +4636,37 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
   
   plates.forEach((plate, plateIdx) => {
     const placedPieces = plate.getPlacedPiecesWithCoords();
+
+    const normalizedPlacementsForPlate = Array.isArray(placedPieces)
+      ? placedPieces.map((placement, idx) => {
+          const normalized = normalizePlacementForCNC({
+            x: placement?.x,
+            y: placement?.y ?? placement?.top,
+            width: placement?.width,
+            height: placement?.height,
+            rotation: placement?.rotation,
+            rotated: placement?.rotated,
+            piece: placement?.piece
+          }, idx);
+          normalized.original = placement;
+          if (placement?.piece) {
+            normalized.piece = placement.piece;
+          }
+          return normalized;
+        })
+      : [];
+
+    currentDisplayedPlacementsByPlate[plateIdx] = normalizedPlacementsForPlate;
+    currentDisplayedPlateSpecs[plateIdx] = {
+      width: Number.isFinite(Number(plate?.plateWidth)) ? Number(plate.plateWidth) : plateSpec.width,
+      height: Number.isFinite(Number(plate?.plateHeight)) ? Number(plate.plateHeight) : plateSpec.height,
+      kerf: Number.isFinite(Number(plate?.kerf)) ? Number(plate.kerf) : getKerfMm(),
+      trimLeft: Number.isFinite(Number(plate?.trimLeft)) ? Number(plate.trimLeft) : 0,
+      trimTop: Number.isFinite(Number(plate?.trimTop)) ? Number(plate.trimTop) : 0,
+      trimRight: 0,
+      trimBottom: 0,
+      material: currentMaterialName || 'Material'
+    };
     
     const VIEW_W = 1000;
     const LABEL_EXTRA_H = 24;
@@ -4936,6 +5059,15 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
     notice.style.cssText = 'background:#fef3c7;color:#92400e;padding:12px;margin:16px 0;border-radius:6px;';
     notice.textContent = `⚠️ ${remaining.length} pieza${remaining.length > 1 ? 's' : ''} no colocada${remaining.length > 1 ? 's' : ''}`;
     sheetCanvasEl.appendChild(notice);
+  }
+
+  // Sincronizar solución avanzada con el resto del sistema (CNC, exportaciones clásicas, etc.)
+  const solutionForCNC = buildSolutionFromAdvancedResult(optimizationResult, plateSpec);
+  if (solutionForCNC) {
+    try { lastSuccessfulSolution = solutionForCNC; } catch (_) {}
+    updateCNCButtonState();
+  } else {
+    console.warn('⚠️ No se pudo sincronizar la solución avanzada con lastSuccessfulSolution');
   }
   
   console.log('✅ Visualización renderizada con', plates.length, 'placa(s)');
@@ -6325,6 +6457,11 @@ async function handleSendCuts() {
     sendCutsBtn.disabled = false;
     sendCutsBtn.classList.remove('disabled-btn');
     toggleActionButtons(isSheetComplete());
+    
+    // Actualizar estado del botón CNC después de finalizar envío
+    if (typeof updateCNCButtonState === 'function') {
+      updateCNCButtonState();
+    }
   }
 }
 
@@ -6437,6 +6574,7 @@ if (resetAllBtn) {
     showingAdvancedOptimization = false;
     lastOptimizationHash = null;
     lastOptimizationResult = null;
+    lastSuccessfulSolution = null; // Limpiar solución guardada
     if (sheetCanvasEl) {
       sheetCanvasEl.innerHTML = '';
     }
@@ -6444,6 +6582,11 @@ if (resetAllBtn) {
     applyPlatesGate();
     toggleAddButton();
     resetSummaryUI();
+    
+    // Actualizar estado del botón CNC después de resetear
+    if (typeof updateCNCButtonState === 'function') {
+      updateCNCButtonState();
+    }
   });
 }
 
@@ -7329,45 +7472,48 @@ if (generateLayoutBtn) {
 
 
 /**
- * Aplica la solución optimizada a la interfaz
+ * Construye un objeto de solución compatible a partir del optimizador avanzado
  */
-async function applySolutionToUI(optimizationResult, plateSpec, options) {
-  // Aquí se conectará con solveCutLayoutInternal para actualizar la visualización
-  // Por ahora, forzar actualización manual
-  console.log('📍 Aplicando solución a UI...');
-  
-  // Convertir formato de advanced-optimizer al formato esperado por renderSolution
-  const { plates, remaining } = optimizationResult;
-  
+function buildSolutionFromAdvancedResult(optimizationResult, plateSpec) {
+  if (!optimizationResult || !plateSpec) {
+    return null;
+  }
+
+  const { plates = [], remaining = [] } = optimizationResult;
+  if (!Array.isArray(plates) || plates.length === 0) {
+    return null;
+  }
+
+  const materialName = currentMaterialName || DEFAULT_MATERIAL;
   const instances = plates.map((plate, idx) => ({
     id: `plate-${idx}`,
     width: plateSpec.width,
     height: plateSpec.height,
-    material: currentMaterialName || DEFAULT_MATERIAL
+    material: materialName
   }));
-  
-  const placements = [];
-  const placementsByPlate = plates.map(plate => {
+
+  const placementsByPlate = plates.map((plate) => {
+    if (typeof plate.getPlacedPiecesWithCoords !== 'function') {
+      return [];
+    }
     const piecesData = plate.getPlacedPiecesWithCoords();
-    return piecesData.map(pd => ({
+    return piecesData.map((pd) => ({
       piece: pd.piece,
       x: pd.x,
       y: pd.y,
       width: pd.width,
       height: pd.height,
-      rotated: pd.piece.rotated || false
+      rotation: pd.rotation,
+      rotated: pd.piece?.rotated || pd.rotation === 90 || pd.rotation === 270
     }));
   });
-  
-  placementsByPlate.forEach(platePlacements => {
-    placements.push(...platePlacements);
-  });
-  
-  const totalRequested = plates.reduce((sum, p) => sum + p.placedPieces.length, 0) + remaining.length;
-  const usedArea = plates.reduce((sum, p) => sum + p.usedArea, 0);
-  const totalArea = plates.reduce((sum, p) => sum + p.totalArea, 0);
-  
-  const solution = {
+
+  const placements = placementsByPlate.flat();
+  const totalRequested = plates.reduce((sum, p) => sum + (Array.isArray(p.placedPieces) ? p.placedPieces.length : 0), 0) + remaining.length;
+  const usedArea = plates.reduce((sum, p) => sum + (Number(p.usedArea) || 0), 0);
+  const totalArea = plates.reduce((sum, p) => sum + (Number(p.totalArea) || 0), 0);
+
+  return {
     instances,
     placementsByPlate,
     placements,
@@ -7375,9 +7521,1132 @@ async function applySolutionToUI(optimizationResult, plateSpec, options) {
     usedArea,
     totalArea,
     leftoverPieces: remaining,
-    pieces: placements.map(p => p.piece)
+    pieces: placements.map((p) => p.piece)
   };
-  
+}
+
+/**
+ * Aplica la solución optimizada a la interfaz (modo clásico)
+ */
+async function applySolutionToUI(optimizationResult, plateSpec, options) {
+  console.log('📍 Aplicando solución a UI...');
+
+  const solution = buildSolutionFromAdvancedResult(optimizationResult, plateSpec);
+  if (!solution) {
+    console.warn('⚠️ No se pudo construir la solución para aplicar a la UI.');
+    return;
+  }
+
+  try { lastSuccessfulSolution = solution; } catch (_) {}
+
   renderSolution(solution);
   console.log('✅ Solución aplicada a UI');
+}
+
+// ============ FUNCIONALIDAD CNC ============
+
+const CNC_MEASURE_DECIMALS = 6;
+const CNC_FLOAT_TOLERANCE = 0.0005;
+const CNC_MEASURE_WIDTH = 12;
+
+function normalizeUiTrimConfig(trim) {
+  if (!trim || typeof trim !== 'object') {
+    return { mm: 0, top: false, right: false, bottom: false, left: false };
+  }
+
+  const parsed = Number.parseFloat(trim.mm);
+  const mm = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+
+  return {
+    mm,
+    top: !!trim.top,
+    right: !!trim.right,
+    bottom: !!trim.bottom,
+    left: !!trim.left
+  };
+}
+
+function determineInitialRefilo({ orientation, plate, refiloPreferido = 0, uiTrim }) {
+  const normalizedTrim = normalizeUiTrimConfig(uiTrim);
+  const mmFromUi = normalizedTrim.mm > 0 ? normalizedTrim.mm : 0;
+  const wantsRx = normalizedTrim.top || normalizedTrim.bottom;
+  const wantsRy = normalizedTrim.left || normalizedTrim.right;
+
+  const trimLeft = Number.isFinite(Number(plate?.trimLeft)) ? Number(plate.trimLeft) : 0;
+  const trimTop = Number.isFinite(Number(plate?.trimTop)) ? Number(plate.trimTop) : 0;
+
+  const pickMeasure = (value) => (Number.isFinite(value) && value > 0 ? value : 0);
+  const preferidoMeasure = pickMeasure(refiloPreferido);
+
+  if (orientation === 'horizontal') {
+    if (wantsRx && mmFromUi > 0) {
+      return { tipo: 'RX', medida: mmFromUi };
+    }
+
+    const plateMeasure = pickMeasure(trimTop);
+    if (plateMeasure > 0) {
+      return { tipo: 'RX', medida: plateMeasure };
+    }
+
+    if (wantsRy && mmFromUi > 0) {
+      return { tipo: 'RY', medida: mmFromUi };
+    }
+
+    if (preferidoMeasure > 0) {
+      return { tipo: 'RX', medida: preferidoMeasure };
+    }
+  } else if (orientation === 'vertical') {
+    if (wantsRy && mmFromUi > 0) {
+      return { tipo: 'RY', medida: mmFromUi };
+    }
+
+    const plateMeasure = pickMeasure(trimLeft);
+    if (plateMeasure > 0) {
+      return { tipo: 'RY', medida: plateMeasure };
+    }
+
+    if (wantsRx && mmFromUi > 0) {
+      return { tipo: 'RX', medida: mmFromUi };
+    }
+
+    if (preferidoMeasure > 0) {
+      return { tipo: 'RY', medida: preferidoMeasure };
+    }
+  } else {
+    if (wantsRx && mmFromUi > 0) {
+      return { tipo: 'RX', medida: mmFromUi };
+    }
+    if (wantsRy && mmFromUi > 0) {
+      return { tipo: 'RY', medida: mmFromUi };
+    }
+  }
+
+  return null;
+}
+
+function getRefiladoInputValue() {
+  const element = document.getElementById('refiladoInput');
+  if (!element) {
+    return 0;
+  }
+  const parsed = Number.parseFloat(element.value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function toFixedMeasure(value) {
+  const numeric = Number.isFinite(value) ? value : 0;
+  return numeric.toFixed(CNC_MEASURE_DECIMALS);
+}
+
+function padMeasure(value) {
+  return toFixedMeasure(value).padStart(CNC_MEASURE_WIDTH, ' ');
+}
+
+function formatRigheLine(lineNumber, command, measure, quantity = 1) {
+  const qty = Number.isFinite(quantity) && quantity > 0 ? Math.round(quantity) : 1;
+  const commandColumn = `${command},`;
+  const measureColumn = padMeasure(measure);
+  return `${lineNumber}=${commandColumn}${measureColumn},${qty},0.000000,0.000000,0.000000,0.000000`;
+}
+
+function numbersAlmostEqual(a, b, tolerance = CNC_FLOAT_TOLERANCE) {
+  return Math.abs((Number(a) || 0) - (Number(b) || 0)) <= tolerance;
+}
+
+function arraysAlmostEqual(a, b, tolerance = CNC_FLOAT_TOLERANCE) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (!numbersAlmostEqual(a[i], b[i], tolerance)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizePlacementForCNC(placement, index = 0) {
+  if (!placement || typeof placement !== 'object') {
+    return {
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      rotated: false,
+      rotation: 0,
+      piece: {},
+      original: placement,
+      valid: false
+    };
+  }
+
+  const piece = placement.piece && typeof placement.piece === 'object' ? placement.piece : {};
+  const rotationValue = Number.parseFloat(placement.rotation);
+  const rotatedFlag = !!(placement.rotated || piece.rotated || rotationValue === 90 || rotationValue === 270);
+
+  let width = Number.parseFloat(placement.width);
+  let height = Number.parseFloat(placement.height);
+
+  if (!Number.isFinite(width) || width <= 0) {
+    if (rotatedFlag) {
+      width = Number.parseFloat(piece.height ?? piece.rawH ?? piece.rawHeight);
+    } else {
+      width = Number.parseFloat(piece.width ?? piece.rawW ?? piece.rawWidth);
+    }
+  }
+
+  if (!Number.isFinite(height) || height <= 0) {
+    if (rotatedFlag) {
+      height = Number.parseFloat(piece.width ?? piece.rawW ?? piece.rawWidth);
+    } else {
+      height = Number.parseFloat(piece.height ?? piece.rawH ?? piece.rawHeight);
+    }
+  }
+
+  const xValue = Number.parseFloat(placement.x ?? piece.x ?? 0);
+  const yValue = Number.parseFloat(placement.y ?? placement.top ?? piece.y ?? piece.top ?? 0);
+
+  const valid = Number.isFinite(width) && width > 0 &&
+                Number.isFinite(height) && height > 0 &&
+                Number.isFinite(xValue) && Number.isFinite(yValue);
+
+  if (!valid) {
+    console.warn('⚠️ CNC: placement con datos incompletos', { index, placement });
+  }
+
+  return {
+    x: Number.isFinite(xValue) ? xValue : 0,
+    y: Number.isFinite(yValue) ? yValue : 0,
+    width: Number.isFinite(width) ? width : 0,
+    height: Number.isFinite(height) ? height : 0,
+    rotated: rotatedFlag,
+    rotation: rotatedFlag ? (Number.isFinite(rotationValue) ? rotationValue : 90) : (Number.isFinite(rotationValue) ? rotationValue : 0),
+    piece,
+    original: placement,
+    valid
+  };
+}
+
+function placementListsMatch(a, b, tolerance = 0.05) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return false;
+  }
+
+  const normalizeList = (list) => list
+    .map((entry) => ({
+      x: Number.parseFloat(entry?.x),
+      y: Number.parseFloat(entry?.y),
+      width: Number.parseFloat(entry?.width),
+      height: Number.parseFloat(entry?.height)
+    }))
+    .filter((entry) => Number.isFinite(entry.x) && Number.isFinite(entry.y) && Number.isFinite(entry.width) && Number.isFinite(entry.height))
+    .sort((p, q) => (p.x - q.x) || (p.y - q.y) || (p.width - q.width) || (p.height - q.height));
+
+  const sortedA = normalizeList(a);
+  const sortedB = normalizeList(b);
+
+  if (sortedA.length !== sortedB.length) {
+    return false;
+  }
+
+  for (let i = 0; i < sortedA.length; i++) {
+    if (!numbersAlmostEqual(sortedA[i].x, sortedB[i].x, tolerance) ||
+        !numbersAlmostEqual(sortedA[i].y, sortedB[i].y, tolerance) ||
+        !numbersAlmostEqual(sortedA[i].width, sortedB[i].width, tolerance) ||
+        !numbersAlmostEqual(sortedA[i].height, sortedB[i].height, tolerance)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function analyzeStripForVerticalPlan(strip) {
+  if (!strip || typeof strip !== 'object') {
+    return { valid: false, reason: 'strip_not_object' };
+  }
+
+  const baseWidth = Number(strip.width);
+  if (!Number.isFinite(baseWidth) || baseWidth <= 0) {
+    return { valid: false, reason: 'invalid_strip_width' };
+  }
+
+  const shelves = Array.isArray(strip.shelves) ? strip.shelves : [];
+  if (!shelves.length) {
+    return { valid: false, reason: 'empty_strip' };
+  }
+
+  const heights = [];
+
+  for (const shelf of shelves) {
+    const shelfHeight = Number(shelf?.height);
+    if (!Number.isFinite(shelfHeight) || shelfHeight <= 0) {
+      return { valid: false, reason: 'invalid_shelf_height' };
+    }
+
+    const shelfPieces = Array.isArray(shelf?.pieces) ? shelf.pieces : [];
+    if (!shelfPieces.length) {
+      return { valid: false, reason: 'empty_shelf' };
+    }
+
+    for (const piece of shelfPieces) {
+      const pieceWidth = Number(piece?.width);
+      if (!Number.isFinite(pieceWidth) || pieceWidth <= 0) {
+        return { valid: false, reason: 'invalid_piece_width', data: { pieceWidth } };
+      }
+    }
+
+    heights.push(shelfHeight);
+  }
+
+  return { valid: true, width: baseWidth, heights };
+}
+
+function groupStripProfiles(profiles) {
+  const groups = [];
+  let current = null;
+
+  for (const profile of profiles) {
+    if (!current) {
+      current = { width: profile.width, heights: profile.heights.slice(), count: 1 };
+      continue;
+    }
+
+    const sameWidth = numbersAlmostEqual(profile.width, current.width);
+    const samePattern = arraysAlmostEqual(profile.heights, current.heights);
+
+    if (sameWidth && samePattern) {
+      current.count += 1;
+    } else {
+      groups.push(current);
+      current = { width: profile.width, heights: profile.heights.slice(), count: 1 };
+    }
+  }
+
+  if (current) {
+    groups.push(current);
+  }
+
+  return groups;
+}
+
+function buildVerticalCutPlanFromPlacements(plate, { refiloPreferido = 0, uiTrim = null } = {}) {
+  if (!plate || typeof plate.getPlacedPiecesWithCoords !== 'function') {
+    return null;
+  }
+
+  const placements = plate.getPlacedPiecesWithCoords();
+  if (!Array.isArray(placements) || placements.length === 0) {
+    return null;
+  }
+
+  const normalizedPlacements = placements
+    .map((piece) => ({
+      x: Number(piece?.x),
+      y: Number(piece?.y || piece?.top || 0),
+      width: Number(piece?.width),
+      height: Number(piece?.height)
+    }))
+    .filter((piece) => Number.isFinite(piece.x) && Number.isFinite(piece.y) &&
+      Number.isFinite(piece.width) && Number.isFinite(piece.height) &&
+      piece.width > 0 && piece.height > 0)
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+
+  if (!normalizedPlacements.length) {
+    return null;
+  }
+
+  // Agrupar columnas por left/right/width y alturas
+  const columns = [];
+  const POSITION_TOLERANCE = 0.05;
+
+  for (const segment of normalizedPlacements) {
+    const left = segment.x;
+    const right = segment.x + segment.width;
+    let column = columns.find(col =>
+      numbersAlmostEqual(col.left, left, POSITION_TOLERANCE) &&
+      numbersAlmostEqual(col.right, right, POSITION_TOLERANCE)
+    );
+    if (!column) {
+      column = {
+        left,
+        right,
+        width: segment.width,
+        heights: [],
+        yStarts: [],
+        segments: []
+      };
+      columns.push(column);
+    }
+    column.segments.push(segment);
+    column.heights.push(segment.height);
+    column.yStarts.push(segment.y);
+  }
+
+  if (!columns.length) {
+    return null;
+  }
+
+  columns.sort((a, b) => a.left - b.left);
+
+  // Agrupar columnas idénticas (mismo ancho y mismas alturas, tolerancia)
+  const GROUP_TOLERANCE = 0.05;
+  const grouped = [];
+  const used = new Array(columns.length).fill(false);
+  for (let i = 0; i < columns.length; i++) {
+    if (used[i]) continue;
+    const base = columns[i];
+    let count = 1;
+    used[i] = true;
+    for (let j = i + 1; j < columns.length; j++) {
+      if (used[j]) continue;
+      const other = columns[j];
+      const sameWidth = numbersAlmostEqual(base.width, other.width, GROUP_TOLERANCE);
+      const sameHeights = arraysAlmostEqual(base.heights, other.heights, GROUP_TOLERANCE);
+      if (sameWidth && sameHeights) {
+        count++;
+        used[j] = true;
+      }
+    }
+    grouped.push({
+      width: base.width,
+      heights: base.heights.slice(),
+      quantity: count
+    });
+  }
+
+  if (!grouped.length) {
+    return null;
+  }
+
+  console.log('🔧 CNC: Column groups detectados', grouped.map(col => ({
+    width: Number(col.width.toFixed(3)),
+    heights: col.heights.map(h => Number(h.toFixed(3))),
+    quantity: col.quantity
+  })));
+
+  const trimTop = Number.isFinite(Number(plate.trimTop)) ? Number(plate.trimTop) : 0;
+
+  const phases = grouped.map(col => ({
+    kind: 'vertical',
+    width: col.width,
+    quantity: col.quantity,
+    refiloX: trimTop > 0 ? trimTop : null,
+    cuts: col.heights.slice()
+  }));
+
+  if (!phases.length) {
+    return null;
+  }
+
+  const refiloInicial = determineInitialRefilo({
+    orientation: 'vertical',
+    plate,
+    refiloPreferido,
+    uiTrim
+  });
+
+  return {
+    orientation: 'vertical',
+    refilo_inicial: refiloInicial,
+    refilos: [],
+    phases
+  };
+}
+
+function buildVerticalCutPlanFromPlate(plate, options = {}) {
+  return buildVerticalCutPlanFromPlacements(plate, options);
+}
+
+function crear_plan_vertical(plate, options) {
+  return buildVerticalCutPlanFromPlate(plate, options);
+}
+
+/**
+ * Función Principal (Pipeline)
+ * 1. Limpia el código "muerto" al final.
+ * 2. Mantiene la lógica de prioridad (Horizontal primero, luego Vertical).
+ */
+function buildCutPlanForPlate(plate, options = {}) {
+  // PRIMERO intentar el patrón horizontal (X/U/V)
+  const horizontalPlan = buildHorizontalCutPlanFromPlate(plate, options);
+  if (horizontalPlan) {
+    return horizontalPlan;
+  }
+
+  // Si no se puede, intentar el vertical (Y/X)
+  const verticalPlan = buildVerticalCutPlanFromPlate(plate, options);
+  if (verticalPlan) {
+    return verticalPlan;
+  }
+
+  // Si ninguno de los patrones se pudo aplicar, fallar.
+  return null;
+}
+
+function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = null } = {}) {
+  if (!plate || typeof plate.getPlacedPiecesWithCoords !== 'function') return null;
+  const placements = plate.getPlacedPiecesWithCoords();
+  if (!Array.isArray(placements) || placements.length === 0) return null;
+
+  // --- Helper Functions and Constants ---
+  function numbersAlmostEqual(a, b, tolerance = 0.01) { return Math.abs(Number(a) - Number(b)) < tolerance; }
+  const WIDTH_TOLERANCE = 0.05;
+  const POSITION_TOLERANCE = 0.05;
+  const kerfValue = 5; 
+  const franjasMap = new Map();
+
+  // 1. Group pieces into candidate "Franjas" (by 'x' and 'width')
+  for (const placement of placements) {
+      const largo = Number(placement?.width); const alto = Number(placement?.height); const x = Number(placement?.x); const y = Number(placement?.y);
+      if (!Number.isFinite(largo) || largo <= 0 || !Number.isFinite(alto) || alto <= 0 || !Number.isFinite(x) || !Number.isFinite(y)) { continue; }
+      
+      let key = Array.from(franjasMap.keys()).find(k => 
+          numbersAlmostEqual(k.largo, largo, WIDTH_TOLERANCE) && 
+          numbersAlmostEqual(k.x, x, POSITION_TOLERANCE)
+      );
+      if (key === undefined) { 
+          key = { largo: largo, x: x }; 
+          franjasMap.set(key, { largo: largo, x: x, placements: [], isSobrante: false }); 
+      }
+      franjasMap.get(key).placements.push({ x, y, width: largo, height: alto });
+  }
+
+  if (franjasMap.size === 0) return null;
+
+  // 2. Sort candidate franjas by 'x' then 'y' of first piece
+  const sortedFranjas = Array.from(franjasMap.values()).sort((a, b) => {
+      const firstPieceAY = a.placements[0]?.y ?? Infinity; 
+      const firstPieceBY = b.placements[0]?.y ?? Infinity;
+      return a.x - b.x || firstPieceAY - firstPieceBY;
+  });
+
+  const finalPhases = [];
+
+  // 3. Create final Phases with CORRECCIÓN de Sobrante
+  for (let i = 0; i < sortedFranjas.length; i++) {
+      const franja = sortedFranjas[i];
+      
+      // CRÍTICO: Si ya fue marcado como sobrante de una fase anterior, la saltamos.
+      if (franja.isSobrante) continue; 
+
+      franja.placements.sort((a, b) => a.y - b.y);
+      const cortesU = franja.placements.map(p => p.height);
+      let currentMainFranjaBottomY = 0;
+      if (franja.placements.length > 0) {
+          currentMainFranjaBottomY = franja.placements[franja.placements.length - 1].y + franja.placements[franja.placements.length - 1].height;
+      } else {
+          continue;
+      }
+
+      let sobranteData = null;
+      let firstSobranteAnchoU = -1;
+      let firstSobranteY = -1; 
+      const combinedCortesV = [];
+      let lastProcessedBottomY = currentMainFranjaBottomY; 
+      
+
+      // --- BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
+      for (let j = i + 1; j < sortedFranjas.length; j++) {
+          const potentialSobranteFranja = sortedFranjas[j];
+          if (potentialSobranteFranja.isSobrante) continue;
+          
+          const firstPieceY = potentialSobranteFranja.placements[0]?.y;
+          
+          // 3. Verificar estructura V* (alto uniforme)
+          potentialSobranteFranja.placements.sort((a, b) => a.y - b.y);
+          const potentialAnchoU = potentialSobranteFranja.placements[0]?.height;
+          const uniformHeight = potentialSobranteFranja.placements.every(p => numbersAlmostEqual(p.height, potentialAnchoU, WIDTH_TOLERANCE));
+          const potentialCortesV = potentialSobranteFranja.placements.map(p => p.width);
+
+          // Si no tiene altura uniforme o piezas válidas, no puede ser parte de NINGUNA cadena de sobrante.
+          if (!uniformHeight || potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
+              break; // Rompe la cadena de búsqueda
+          }
+          
+          const isFirstSobrante = (combinedCortesV.length === 0);
+
+          if (isFirstSobrante) {
+              // --- LÓGICA PARA EL *PRIMER* SOBRANTE ---
+              
+              const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
+              const expectedY = lastProcessedBottomY + kerfValue;
+              const startsBelow = firstPieceY !== undefined &&
+                  (firstPieceY >= lastProcessedBottomY - kerfValue && firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
+
+              if (similarX && startsBelow) {
+                  // Es el primer sobrante V* válido
+                  firstSobranteAnchoU = potentialAnchoU;
+                  firstSobranteY = firstPieceY; 
+                  combinedCortesV.push(...potentialCortesV);
+                  potentialSobranteFranja.isSobrante = true; 
+                  // Actualizamos el 'bottomY' para apilamiento VERTICAL
+                  lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
+                                         potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
+                  continue; 
+              }
+
+          } else {
+              // --- LÓGICA PARA SOBRANTES *SUBSECUENTES* ---
+              
+              if (!numbersAlmostEqual(potentialAnchoU, firstSobranteAnchoU, WIDTH_TOLERANCE)) {
+                  break; 
+              }
+
+              // OPCIÓN 1: Apilado Verticalmente 
+              const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
+              const expectedY_strict = lastProcessedBottomY + kerfValue;
+              const startsBelow_Vertical = numbersAlmostEqual(expectedY_strict, firstPieceY, POSITION_TOLERANCE);
+
+              if (similarX && startsBelow_Vertical) {
+                  // Acumula verticalmente
+                  combinedCortesV.push(...potentialCortesV);
+                  potentialSobranteFranja.isSobrante = true;
+                  lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
+                                         potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
+                  continue; 
+              }
+
+              // OPCIÓN 2: Agrupado Horizontalmente (MISMA CORRECCIÓN QUE ANTES)
+              const startsAtSameY_Horizontal = numbersAlmostEqual(firstSobranteY, firstPieceY, POSITION_TOLERANCE);
+
+              if (startsAtSameY_Horizontal) {
+                  // Acumula horizontalmente 
+                  combinedCortesV.push(...potentialCortesV);
+                  potentialSobranteFranja.isSobrante = true;
+                  continue; 
+              }
+          }
+          
+          break; 
+      } // --- FIN BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
+
+
+      // 4. Add the main phase
+      
+      if (combinedCortesV.length > 0) {
+          sobranteData = {
+              ancho_u: firstSobranteAnchoU,
+              cortes_v: combinedCortesV
+          };
+      }
+
+      finalPhases.push({
+          kind: 'horizontal',
+          largo: franja.largo,
+          cantidad: 1,
+          // *** CAMBIO CRÍTICO: refiloU ya no depende de la existencia de sobrante ***
+          refiloU: 5.0, 
+          cortesU: cortesU,
+          sobrante: sobranteData
+      });
+
+  } // End main loop (i)
+
+  const refiloInicial = determineInitialRefilo({
+    orientation: 'horizontal',
+    plate,
+    refiloPreferido,
+    uiTrim
+  });
+
+  return {
+    orientation: 'horizontal',
+    refilo_inicial: refiloInicial,
+    refilos: [],
+    phases: finalPhases
+  };
+}
+
+/**
+ * Genera archivos CNC para todas las placas optimizadas
+ */
+function generateCNCFiles() {
+  console.log('🔧 CNC: Iniciando generación de archivos CNC...');
+  console.log('🔧 CNC: lastSuccessfulSolution:', lastSuccessfulSolution);
+  
+  const hasDisplayedPlacements = Array.isArray(currentDisplayedPlacementsByPlate) && currentDisplayedPlacementsByPlate.length > 0;
+
+  if (!hasDisplayedPlacements && !lastSuccessfulSolution) {
+    alert('⚠️ No hay placas optimizadas para generar archivos CNC');
+    return;
+  }
+
+  const instances = Array.isArray(lastSuccessfulSolution?.instances) ? lastSuccessfulSolution.instances : [];
+  const cachedPlacementsByPlate = Array.isArray(lastSuccessfulSolution?.placementsByPlate) ? lastSuccessfulSolution.placementsByPlate : [];
+  const placementsSource = hasDisplayedPlacements ? currentDisplayedPlacementsByPlate : cachedPlacementsByPlate;
+  const configuredPlates = getPlates();
+  const basePlate = configuredPlates[0] || {};
+  const totalPlatesNeeded = (placementsSource.length > 0)
+    ? placementsSource.length
+    : (instances.length > 0 ? instances.length : (Number.isFinite(basePlate.sc) && basePlate.sc > 0 ? basePlate.sc : 1));
+  
+  console.log('🔧 CNC: usando placements de la vista actual?', hasDisplayedPlacements);
+  console.log('🔧 CNC: instances:', instances);
+  console.log('🔧 CNC: placements seleccionados:', placementsSource?.length);
+  console.log('🔧 CNC: Placas configuradas completas:', configuredPlates);
+  console.log('🔧 CNC: Total de placas necesarias:', totalPlatesNeeded);
+  if (!hasDisplayedPlacements) {
+    console.log('🔧 CNC: placementsByPlate detalle (cache):', cachedPlacementsByPlate);
+  }
+  
+  if (totalPlatesNeeded === 0) {
+    alert('⚠️ No hay placas para generar archivos CNC');
+    return;
+  }
+
+  // Obtener configuración actual
+  const kerfValue = parseFloat(kerfInput?.value || '5');
+  const projectName = projectNameEl?.value?.trim() || 'proyecto';
+  const baseFilename = projectName.replace(/\s+/g, ' ').trim() || 'proyecto';
+  
+  console.log('🔧 CNC: Configuración:', { kerfValue, projectName, baseFilename, totalPlatesNeeded });
+  
+  // Generar archivo para cada placa necesaria
+  console.log(`🔧 CNC: Iniciando generación de ${totalPlatesNeeded} archivos CNC...`);
+  const generationErrors = [];
+  
+  for (let index = 0; index < totalPlatesNeeded; index++) {
+    const plateNumber = String(index + 1).padStart(3, '0');
+    const filenameWithSuffix = `${baseFilename}.${plateNumber}`;
+    
+    console.log(`🔧 CNC: Procesando placa ${plateNumber}`);
+    
+    // Crear objeto de instancia compatible usando la solución mostrada si existe
+    const inst = instances[index] || {};
+    const plateMeta = hasDisplayedPlacements ? (currentDisplayedPlateSpecs[index] || null) : null;
+    const plateInstance = {
+      id: `plate-${index}`,
+      width: plateMeta?.width ?? inst.width ?? inst.sw ?? basePlate.sw ?? 2750,
+      height: plateMeta?.height ?? inst.height ?? inst.sh ?? basePlate.sh ?? 1830,
+      material: plateMeta?.material ?? inst.material ?? basePlate.material ?? currentMaterialName ?? 'Material'
+    };
+    
+    // Tomar los placements de la placa correspondiente si existen; si no, usar la primera como fallback
+    const platePlacements = (placementsSource[index] && placementsSource[index].length >= 0)
+      ? placementsSource[index]
+      : (placementsSource[0] || []);
+
+    const uiPlateConfig = configuredPlates.length
+      ? configuredPlates[Math.min(index, configuredPlates.length - 1)]
+      : null;
+    const uiTrim = uiPlateConfig && uiPlateConfig.trim ? uiPlateConfig.trim : null;
+
+    try {
+      const kerfForPlate = plateMeta?.kerf ?? kerfValue;
+      const cncContent = generateCNCForPlate(plateInstance, platePlacements, plateNumber, kerfForPlate, uiTrim);
+      
+      console.log(`🔧 CNC: Contenido generado para ${filenameWithSuffix} (${cncContent.length} chars)`);
+      
+      // Descargar archivo con delay para evitar bloqueo del navegador
+      setTimeout(() => {
+        downloadFile(cncContent, filenameWithSuffix);
+        console.log(`📥 CNC: Descargando archivo ${filenameWithSuffix}`);
+      }, index * 100); // 100ms de delay entre cada descarga
+    } catch (error) {
+      console.error(`❌ CNC: Error generando archivo para placa ${plateNumber}`, error);
+      generationErrors.push({ plateNumber, message: error?.message || String(error) });
+    }
+  }
+
+  if (generationErrors.length) {
+    const detail = generationErrors.map(err => `• Placa ${err.plateNumber}: ${err.message}`).join('\n');
+    alert(`❌ Error generando archivos CNC:\n${detail}`);
+    return;
+  }
+
+  console.log(`✅ CNC: Programadas ${totalPlatesNeeded} descargas de archivos CNC`);
+  alert(`✅ Se generaron ${totalPlatesNeeded} archivos CNC`);
+}
+
+/**
+ * Genera el contenido CNC para una placa específica
+ */
+function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
+  const platePlacements = Array.isArray(placements) ? placements : [];
+
+  const plateWidth = instance.width || 2750;
+  const plateHeight = instance.height || 1830;
+  const plateMaterial = instance.material || 'Material';
+  const plateThickness = 18;
+
+  console.log('🔧 Generando CNC para placa:', {
+    plateNumber,
+    plateWidth,
+    plateHeight,
+    plateMaterial,
+    placementsCount: platePlacements.length
+  });
+
+  let content = `[Intestazione]\n`;
+  content += `Descrizione=${plateMaterial} - Placa ${plateNumber}\n`;
+  content += `Lunghezza=${plateWidth.toFixed(6)}\n`;
+  content += `Larghezza=${plateHeight.toFixed(6)}\n`;
+  content += `Spessore=${plateThickness}.000000\n\n`;
+
+  const normalizedPlacements = platePlacements.map((placement, index) => normalizePlacementForCNC(placement, index));
+  const allPlacementsValid = normalizedPlacements.every((entry) => entry?.valid);
+  const planPlacements = allPlacementsValid
+    ? normalizedPlacements.map(({ x, y, width, height }) => ({ x, y, width, height }))
+    : [];
+
+  const refiloPreferido = getRefiladoInputValue();
+  const plateModel = Array.isArray(lastOptimizationResult?.plates)
+    ? lastOptimizationResult.plates[Number(plateNumber) - 1]
+    : null;
+
+  const trimConfig = normalizeUiTrimConfig(uiTrim);
+  const kerfValue = Number.isFinite(kerf) ? kerf : getKerfMm();
+  const fallbackPlateProps = {
+    kerf: kerfValue,
+    trimLeft: trimConfig.left ? trimConfig.mm : 0,
+    trimTop: trimConfig.top ? trimConfig.mm : 0,
+    trimRight: trimConfig.right ? trimConfig.mm : 0,
+    trimBottom: trimConfig.bottom ? trimConfig.mm : 0
+  };
+
+  let planPlate = null;
+  if (planPlacements.length) {
+    if (plateModel && typeof plateModel.getPlacedPiecesWithCoords === 'function') {
+      try {
+        const modelPlacementsRaw = plateModel.getPlacedPiecesWithCoords();
+        const modelNormalized = Array.isArray(modelPlacementsRaw)
+          ? modelPlacementsRaw.map((entry, idx) => normalizePlacementForCNC(entry, idx)).filter((entry) => entry && entry.valid)
+          : [];
+        const modelForComparison = modelNormalized.map(({ x, y, width, height }) => ({ x, y, width, height }));
+        if (placementListsMatch(modelForComparison, planPlacements)) {
+          planPlate = {
+            kerf: Number.isFinite(Number(plateModel.kerf)) ? Number(plateModel.kerf) : fallbackPlateProps.kerf,
+            trimLeft: Number.isFinite(Number(plateModel.trimLeft)) ? Number(plateModel.trimLeft) : fallbackPlateProps.trimLeft,
+            trimTop: Number.isFinite(Number(plateModel.trimTop)) ? Number(plateModel.trimTop) : fallbackPlateProps.trimTop,
+            trimRight: Number.isFinite(Number(plateModel.trimRight)) ? Number(plateModel.trimRight) : fallbackPlateProps.trimRight,
+            trimBottom: Number.isFinite(Number(plateModel.trimBottom)) ? Number(plateModel.trimBottom) : fallbackPlateProps.trimBottom,
+            getPlacedPiecesWithCoords: () => modelForComparison.map((entry) => ({ ...entry }))
+          };
+        } else {
+          console.warn('⚠️ CNC: el modelo de placa cacheado no coincide con los placements actuales, se regenerará.');
+        }
+      } catch (error) {
+        console.warn('⚠️ CNC: no se pudo usar el modelo de placa cacheado', error);
+      }
+    }
+
+    if (!planPlate) {
+      planPlate = {
+        ...fallbackPlateProps,
+        getPlacedPiecesWithCoords: () => planPlacements.map((entry) => ({ ...entry }))
+      };
+    }
+  } else if (!allPlacementsValid && platePlacements.length) {
+    console.warn('⚠️ CNC: placements inválidos detectados; no se puede derivar un plan confiable.');
+  }
+
+  if (!planPlate) {
+    throw new Error('No hay placements válidos para construir el plan CNC de esta placa.');
+  }
+
+  const plan = buildCutPlanForPlate(planPlate, { refiloPreferido, uiTrim });
+  if (!plan) {
+    throw new Error('No se pudo construir el plan de corte para la placa.');
+  }
+
+  const righeEntries = collectRigheEntriesFromPlan(plan);
+  if (!Array.isArray(righeEntries) || !righeEntries.length) {
+    throw new Error('El plan derivado no produjo líneas [Righe] válidas.');
+  }
+
+  content += `[Righe]\n`;
+  content += `NumeroRighe=${righeEntries.length}\n`;
+  righeEntries.forEach((entry, idx) => {
+    content += `${formatRigheLine(idx + 1, entry.command, entry.measure, entry.quantity)}\n`;
+  });
+  content += '\n';
+
+  content += `[Dati]\n`;
+  content += `NumeroDati=${normalizedPlacements.length}\n`;
+  normalizedPlacements.forEach((placement, index) => {
+    const piece = placement.piece || {};
+    const width = Number.isFinite(placement.width) && placement.width > 0
+      ? placement.width
+      : Number.parseFloat(piece.width || piece.rawW || 0) || 0;
+    const height = Number.isFinite(placement.height) && placement.height > 0
+      ? placement.height
+      : Number.parseFloat(piece.height || piece.rawH || 0) || 0;
+    const thickness = Number.parseFloat(piece.thickness || plateThickness) || plateThickness;
+    const quantityRaw = Number.parseInt(piece.quantity ?? piece.qty ?? 1, 10);
+    const quantity = Number.isFinite(quantityRaw) && quantityRaw > 0 ? quantityRaw : 1;
+    const pieceId = piece.id || piece.name || `Pieza${index + 1}`;
+
+    console.log(`🔧 CNC Datos pieza ${index + 1}:`, {
+      pieceId,
+      width,
+      height,
+      thickness,
+      quantity,
+      isRotated: placement.rotated,
+      valid: placement.valid
+    });
+
+    content += `${index + 1}=${pieceId},${width.toFixed(6)},${height.toFixed(6)},${thickness.toFixed(6)},${quantity}\n`;
+  });
+  content += '\n';
+
+  content += `[Riferimenti]\n`;
+  content += `NumeroRiferimenti=${normalizedPlacements.length}\n`;
+  normalizedPlacements.forEach((placement, index) => {
+    const x = Number.isFinite(placement.x) ? placement.x : 0;
+    const y = Number.isFinite(placement.y) ? placement.y : 0;
+    content += `${index + 1}=${x.toFixed(6)},${y.toFixed(6)},${index + 1}\n`;
+  });
+
+  console.log(`✅ CNC: Archivo generado para placa ${plateNumber} (${content.length} caracteres, ${normalizedPlacements.length} piezas)`);
+
+  return content;
+}
+
+/**
+ * Genera la secuencia de cortes estilo guillotina
+ */
+function generateCutSequence(placements, plate, kerf) {
+  const cuts = [];
+  const refilado = getRefiladoInputValue();
+  
+  // Refilado inicial si está configurado
+  if (refilado > 0) {
+    cuts.push(`RY,${refilado.toFixed(6)},1,0.000000,0.000000,0.000000,0.000000,0.000000,0,0,0,0,0.000000,0.000000`);
+    cuts.push(`RX,${refilado.toFixed(6)},1,0.000000,0.000000,0.000000,0.000000,0.000000,0,0,0,0,0.000000,0.000000`);
+  }
+  
+  // Verificar que tenemos placas válidas
+  if (!placements || placements.length === 0) {
+    console.warn('🔧 CNC: No hay placements para generar cortes');
+    return cuts;
+  }
+  
+  // Algoritmo básico de guillotina
+  const sortedPlacements = [...placements].sort((a, b) => {
+    const aY = parseFloat(a.y || 0);
+    const bY = parseFloat(b.y || 0);
+    const aX = parseFloat(a.x || 0);
+    const bX = parseFloat(b.x || 0);
+    return aY - bY || aX - bX;
+  });
+  
+  for (let i = 0; i < sortedPlacements.length; i++) {
+    const placement = sortedPlacements[i];
+    const piece = placement.piece || {};
+    
+    // Verificar que tenemos las dimensiones necesarias
+    const x = parseFloat(placement.x || 0);
+    const y = parseFloat(placement.y || 0);
+    const isRotated = placement.rotation === 90 || placement.rotation === 270 || placement.rotated;
+    
+    // Obtener dimensiones de la pieza
+    let pieceWidth, pieceHeight;
+    if (isRotated) {
+      pieceWidth = parseFloat(piece.height || placement.height || 100);
+      pieceHeight = parseFloat(piece.width || placement.width || 100);
+    } else {
+      pieceWidth = parseFloat(piece.width || placement.width || 100);
+      pieceHeight = parseFloat(piece.height || placement.height || 100);
+    }
+    
+    console.log(`🔧 CNC Corte ${i + 1}:`, {
+      pieceId: piece.id || piece.name || `Pieza${i + 1}`,
+      x, y, pieceWidth, pieceHeight, isRotated
+    });
+    
+    // Corte vertical (Y) - solo si es diferente posición Y que la anterior
+    if (i === 0 || parseFloat(sortedPlacements[i-1].y || 0) !== y) {
+      cuts.push(`Y,${y.toFixed(6)},1,0.000000,0.000000,0.000000,0.000000,0.000000,0,0,0,0,0.000000,0.000000`);
+    }
+    
+    // Corte horizontal (X)
+    cuts.push(`X,${x.toFixed(6)},1,0.000000,0.000000,0.000000,0.000000,0.000000,0,0,0,0,0.000000,0.000000`);
+    
+    // Corte de la pieza
+    cuts.push(`U,${pieceWidth.toFixed(6)},1,0.000000,0.000000,0.000000,0.000000,0.000000,0,0,0,0,0.000000,0.000000`);
+    cuts.push(`U*,${pieceHeight.toFixed(6)},1,0.000000,0.000000,0.000000,0.000000,0.000000,0,0,0,0,0.000000,0.000000`);
+  }
+  
+  return cuts;
+}
+
+/**
+ * Descarga un archivo con el contenido especificado
+ */
+function downloadFile(content, filename) {
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Agrega el botón CNC a la interfaz
+ */
+function addCNCExportButton() {
+  // Buscar el contenedor de botones de exportación
+  const exportSection = document.querySelector('.export-group') ||
+                       document.querySelector('.export-section') || 
+                       document.querySelector('.btn-group') ||
+                       exportPdfBtn?.parentElement;
+  
+  if (!exportSection) {
+    console.warn('No se encontró sección de exportación para agregar botón CNC');
+    return;
+  }
+  
+  // Verificar si ya existe el botón
+  if (document.querySelector('#cncExportBtn')) {
+    return;
+  }
+  
+  const cncBtn = document.createElement('button');
+  cncBtn.id = 'cncExportBtn';
+  cncBtn.className = 'btn';
+  cncBtn.innerHTML = '🔧 Generar CNC';
+  cncBtn.title = 'Generar archivos CNC (.001, .002, etc.) para máquina de corte';
+  cncBtn.onclick = generateCNCFiles;
+  
+  exportSection.appendChild(cncBtn);
+  console.log('✅ Botón CNC agregado a la interfaz');
+  
+  // Actualizar estado del botón
+  updateCNCButtonState();
+}
+
+/**
+ * Actualiza el estado del botón CNC según si hay placas optimizadas
+ */
+function updateCNCButtonState() {
+  const cncBtn = document.querySelector('#cncExportBtn');
+  if (!cncBtn) {
+    console.log('🔧 CNC Button: Botón no encontrado');
+    return;
+  }
+  
+  // Verificar si realmente hay placas optimizadas con cortes
+  let hasOptimizedPlates = false;
+  let debugInfo = {};
+  
+  // 1. Verificar lastSuccessfulSolution Y que tenga instancias con piezas colocadas
+  if (lastSuccessfulSolution && 
+      lastSuccessfulSolution.instances && 
+      lastSuccessfulSolution.instances.length > 0) {
+    
+    // Verificar que al menos una instancia tenga piezas colocadas
+    const hasPlacedPieces = lastSuccessfulSolution.instances.some(instance => 
+      instance.placements && instance.placements.length > 0
+    );
+    
+    if (hasPlacedPieces) {
+      hasOptimizedPlates = true;
+      debugInfo.lastSuccessfulSolution = true;
+      debugInfo.instancesCount = lastSuccessfulSolution.instances.length;
+      debugInfo.totalPlacements = lastSuccessfulSolution.instances.reduce((sum, inst) => 
+        sum + (inst.placements ? inst.placements.length : 0), 0);
+    } else {
+      debugInfo.lastSuccessfulSolution = false;
+      debugInfo.reason = 'No hay piezas colocadas en las instancias';
+    }
+  } else {
+    debugInfo.lastSuccessfulSolution = false;
+    debugInfo.reason = 'No hay lastSuccessfulSolution válido';
+  }
+
+  // 1.b Verificación alternativa específica: revisar placementsByPlate de la solución (render avanzado)
+  if (!hasOptimizedPlates && lastSuccessfulSolution && Array.isArray(lastSuccessfulSolution.placementsByPlate)) {
+    const anyPlateHasPieces = lastSuccessfulSolution.placementsByPlate.some(arr => Array.isArray(arr) && arr.length > 0);
+    if (anyPlateHasPieces) {
+      hasOptimizedPlates = true;
+      debugInfo.fromPlacementsByPlate = true;
+      debugInfo.platesWithPieces = lastSuccessfulSolution.placementsByPlate.filter(arr => Array.isArray(arr) && arr.length > 0).length;
+    }
+  }
+  
+  // 2. Como verificación secundaria, revisar si hay canvas con contenido
+  if (!hasOptimizedPlates) {
+    const sheetCanvas = document.getElementById('sheetCanvas');
+    const hasSheetContent = sheetCanvas && sheetCanvas.innerHTML.trim() !== '' && 
+                           sheetCanvas.querySelector('svg');
+    debugInfo.hasSheetCanvas = hasSheetContent;
+    
+    if (hasSheetContent) {
+      // Verificar que el SVG tenga elementos de piezas (rect con class que indique piezas)
+      const pieceElements = sheetCanvas.querySelectorAll('rect[data-piece-id], .piece-rect, rect.piece');
+      if (pieceElements.length > 0) {
+        hasOptimizedPlates = true;
+        debugInfo.fromSheetCanvas = true;
+        debugInfo.pieceElementsCount = pieceElements.length;
+      }
+    }
+  }
+  
+  console.log('🔧 CNC Button State Update:', { 
+    hasOptimizedPlates, 
+    debugInfo,
+    buttonExists: !!cncBtn,
+    buttonCurrentlyEnabled: !cncBtn.disabled
+  });
+  
+  if (hasOptimizedPlates) {
+    cncBtn.disabled = false;
+    cncBtn.classList.remove('disabled-btn');
+    cncBtn.style.opacity = '1';
+    console.log('✅ CNC Button: HABILITADO - Hay placas optimizadas con piezas');
+  } else {
+    cncBtn.disabled = true;
+    cncBtn.classList.add('disabled-btn');
+    cncBtn.style.opacity = '0.5';
+    console.log('❌ CNC Button: DESHABILITADO - No hay placas optimizadas con piezas');
+  }
+}
+
+// ============ INICIALIZACIÓN CNC ============
+
+// Agregar el botón CNC cuando se carga la página
+document.addEventListener('DOMContentLoaded', () => {
+  // Intentar agregar el botón después de que se inicialice la interfaz
+  setTimeout(() => {
+    addCNCExportButton();
+  }, 1000);
+  
+  // Reintentar periódicamente si no se agregó
+  const checkInterval = setInterval(() => {
+    if (!document.querySelector('#cncExportBtn')) {
+      addCNCExportButton();
+    } else {
+      clearInterval(checkInterval);
+    }
+  }, 2000);
+  
+  // Detener después de 30 segundos
+  setTimeout(() => {
+    clearInterval(checkInterval);
+  }, 30000);
+});
+
+// Actualizar estado del botón cuando cambie la solución
+const originalRenderSolution = window.renderSolution;
+if (originalRenderSolution) {
+  window.renderSolution = function(solution) {
+    const result = originalRenderSolution.apply(this, arguments);
+    // Sincronizar la última solución exitosa con lo que se muestra en UI
+    try {
+      if (solution && typeof solution === 'object') {
+        lastSuccessfulSolution = solution;
+      }
+    } catch (_) {}
+    // Actualizar estado del botón CNC después de renderizar (inmediato y con timeout)
+    updateCNCButtonState();
+    setTimeout(updateCNCButtonState, 100);
+    setTimeout(updateCNCButtonState, 500);
+    return result;
+  };
 }
