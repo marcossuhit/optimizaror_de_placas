@@ -33,32 +33,22 @@ function collectRigheEntriesFromPlan(plan) {
       });
 
     } else if (phase.kind === 'horizontal') {
-      // Lógica de Patrón Horizontal (X, RU, U, V*)
+      // Lógica de Patrón Horizontal (X, U, V*) - SIN RU
       entries.push({ command: 'X', measure: phase.largo, quantity: phase.cantidad || 1 });
-      if (Number.isFinite(phase.refiloU) && phase.refiloU > 0) {
-        entries.push({ command: 'RU', measure: phase.refiloU, quantity: 1 });
-      }
-      
+      // NO agregar RU
       // Cortes U (principales)
       (Array.isArray(phase.cortesU) ? phase.cortesU : []).forEach(corte => {
         entries.push({ command: 'U', measure: corte, quantity: 1 });
       });
-      
       // Sobrante V* - LÓGICA CORREGIDA PARA V* -> U -> V -> V
       const sobrante = phase.sobrante;
       if (sobrante && Number.isFinite(sobrante.ancho_u) && sobrante.ancho_u > 0) {
         entries.push({ command: 'V*', measure: 0, quantity: 1 });
         entries.push({ command: 'U', measure: sobrante.ancho_u, quantity: 1 });
-        
         const cortesV = Array.isArray(sobrante.cortes_v) ? sobrante.cortes_v : [];
-        
-        // *** ARREGLO CLAVE: El bucle debe procesar todos los cortes V ***
         cortesV.forEach(corteV => {
           entries.push({ command: 'V', measure: corteV, quantity: 1 });
         });
-        // Este bucle ahora garantiza que se generen 5 líneas 'V' consecutivas.
-        // Lo que estabas viendo era que el bucle se rompía o la siguiente función
-        // lo ignoraba. Al poner esta lógica directamente, forzamos la salida correcta.
       }
     }
   }
