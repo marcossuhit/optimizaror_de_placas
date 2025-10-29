@@ -7840,6 +7840,57 @@ function buildVerticalCutPlanFromPlacements(plate, { refiloPreferido = 0, uiTrim
     return null;
   }
 
+  // --- Helper Functions and Constants ---
+  const POSITION_TOLERANCE = 0.05;
+  const GROUP_TOLERANCE = 0.05;
+
+  function numbersAlmostEqual(a, b, tolerance = POSITION_TOLERANCE) {
+      return Math.abs((Number(a) || 0) - (Number(b) || 0)) <= tolerance;
+  }
+
+  function arraysAlmostEqual(a, b, tolerance = GROUP_TOLERANCE) {
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+          return false;
+      }
+      for (let i = 0; i < a.length; i++) {
+          if (!numbersAlmostEqual(a[i], b[i], tolerance)) {
+              return false;
+          }
+      }
+      return true;
+  }
+
+  function groupStripProfiles(profiles) {
+      const groups = [];
+      const used = new Array(profiles.length).fill(false);
+
+      for (let i = 0; i < profiles.length; i++) {
+          if (used[i]) continue;
+          const base = profiles[i];
+          let count = 1;
+          used[i] = true;
+          
+          for (let j = i + 1; j < profiles.length; j++) {
+              if (used[j]) continue;
+              const other = profiles[j];
+              const sameWidth = numbersAlmostEqual(base.width, other.width, GROUP_TOLERANCE);
+              const samePattern = arraysAlmostEqual(base.heights, other.heights, GROUP_TOLERANCE);
+
+              if (sameWidth && samePattern) {
+                  count++;
+                  used[j] = true;
+              }
+          }
+          groups.push({
+              width: base.width,
+              heights: base.heights.slice(),
+              quantity: count
+          });
+      }
+      return groups;
+  }
+  // --- Fin Helper Functions ---
+
   const normalizedPlacements = placements
     .map((piece) => ({
       x: Number(piece?.x),
@@ -7856,10 +7907,8 @@ function buildVerticalCutPlanFromPlacements(plate, { refiloPreferido = 0, uiTrim
     return null;
   }
 
-  // Agrupar columnas por left/right/width y alturas
+  // 1. Agrupar piezas en columnas por posición X (ancho y ubicación)
   const columns = [];
-  const POSITION_TOLERANCE = 0.05;
-
   for (const segment of normalizedPlacements) {
     const left = segment.x;
     const right = segment.x + segment.width;
@@ -7873,71 +7922,43 @@ function buildVerticalCutPlanFromPlacements(plate, { refiloPreferido = 0, uiTrim
         right,
         width: segment.width,
         heights: [],
-        yStarts: [],
         segments: []
       };
       columns.push(column);
     }
+    // Asumiendo que las piezas están ordenadas por Y dentro de cada columna,
+    // usamos la altura (longitud en la tira Y) como los cortes internos.
     column.segments.push(segment);
-    column.heights.push(segment.height);
-    column.yStarts.push(segment.y);
-  }
-
-  if (!columns.length) {
-    return null;
   }
 
   columns.sort((a, b) => a.left - b.left);
+  
+  // 2. Ordenar segmentos por Y (para obtener el patrón de cortes X)
+  columns.forEach(col => {
+      col.segments.sort((a, b) => a.y - b.y);
+      col.heights = col.segments.map(s => s.height);
+  });
 
-  // Agrupar columnas idénticas (mismo ancho y mismas alturas, tolerancia)
-  const GROUP_TOLERANCE = 0.05;
-  const grouped = [];
-  const used = new Array(columns.length).fill(false);
-  for (let i = 0; i < columns.length; i++) {
-    if (used[i]) continue;
-    const base = columns[i];
-    let count = 1;
-    used[i] = true;
-    for (let j = i + 1; j < columns.length; j++) {
-      if (used[j]) continue;
-      const other = columns[j];
-      const sameWidth = numbersAlmostEqual(base.width, other.width, GROUP_TOLERANCE);
-      const sameHeights = arraysAlmostEqual(base.heights, other.heights, GROUP_TOLERANCE);
-      if (sameWidth && sameHeights) {
-        count++;
-        used[j] = true;
-      }
-    }
-    grouped.push({
-      width: base.width,
-      heights: base.heights.slice(),
-      quantity: count
-    });
-  }
+  // 3. Agrupar columnas idénticas (mismo ancho y patrón de cortes)
+  const grouped = groupStripProfiles(columns);
 
   if (!grouped.length) {
     return null;
   }
-
-  console.log('🔧 CNC: Column groups detectados', grouped.map(col => ({
-    width: Number(col.width.toFixed(3)),
-    heights: col.heights.map(h => Number(h.toFixed(3))),
-    quantity: col.quantity
-  })));
-
-  const trimTop = Number.isFinite(Number(plate.trimTop)) ? Number(plate.trimTop) : 0;
-
+  
+  // 4. Determinar Refilo Longitudinal (RX) y construir las fases.
+  const userRefiloValue = Number.isFinite(uiTrim?.mm) && uiTrim.mm > 0 ? uiTrim.mm : 0;
+  
   const phases = grouped.map(col => ({
     kind: 'vertical',
     width: col.width,
     quantity: col.quantity,
-    refiloX: trimTop > 0 ? trimTop : null,
+    // COMPORTAMIENTO COMPARTIDO: Aplicar el refilo del usuario (RX, análogo a RU) 
+    // a todas las tiras Y que tienen cortes.
+    refiloX: userRefiloValue > 0 ? userRefiloValue : null,
     cuts: col.heights.slice()
+    // Nota: Lógica de sobrante U* y U no implementada aquí para mantener la simplicidad.
   }));
-
-  if (!phases.length) {
-    return null;
-  }
 
   const refiloInicial = determineInitialRefilo({
     orientation: 'vertical',
@@ -7990,7 +8011,7 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
   if (!Array.isArray(placements) || placements.length === 0) return null;
 
   // La lógica: 0 si hay V*, sino usa el valor de entrada del usuario
-  const userRefilo = Number(uiTrim.mm); // Convertimos el valor de entrada
+  const userRefilo = Number(uiTrim.mm); // Valor del refilo de limpieza (ej. 5.0)
 
   // --- Helper Functions and Constants ---
   function numbersAlmostEqual(a, b, tolerance = 0.01) { return Math.abs(Number(a) - Number(b)) < tolerance; }
@@ -8027,7 +8048,7 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
   const finalPhases = [];
 
   // 3. Create final Phases with CORRECCIÓN de Sobrante
-  for (let i = 0; i < sortedFranjas.length; i++) {
+  for (let i = 0; i < sortedFranjas.length; i++) { // <-- 'i' es el índice de la fase (0, 1, 2, ...)
       const franja = sortedFranjas[i];
       
       // CRÍTICO: Si ya fue marcado como sobrante de una fase anterior, la saltamos.
@@ -8049,7 +8070,7 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
       let lastProcessedBottomY = currentMainFranjaBottomY; 
       
 
-      // --- BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
+      // --- BUCLE DE ACUMULACIÓN DE SOBRANTES (j) --- (Lógica de apilamiento H/V sin cambios)
       for (let j = i + 1; j < sortedFranjas.length; j++) {
           const potentialSobranteFranja = sortedFranjas[j];
           if (potentialSobranteFranja.isSobrante) continue;
@@ -8132,18 +8153,32 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           };
       }
 
-      // Lógica: emitir RU después de X solo si los U siguientes NO están seguidos inmediatamente por un V*
+      // -----------------------------------------------------------------------------------------
+      // *** CORRECCIÓN CLAVE para RU: Regla de la PRIMERA FASE CON V* ***
       let phaseRefiloU = 0;
       
       if (Array.isArray(cortesU) && cortesU.length > 0) {
-        // Si hay piezas U en esta franja (y no es una franja marcada como sobrante), aplicamos el refilo del usuario.
-        phaseRefiloU = userRefilo;
-        console.log(`[CNC-LOG] Fase ${i}: Con cortes U | EMITE RU con userRefilo`);
+        // Hay piezas U en esta fase.
+        const hasSobrante = !!sobranteData;
+        const isFirstPhase = i === 0;
+        
+        // Regla de Lepton Inferencia: Se SUPRIME RU solo para la PRIMERA tira X (i=0) que tiene V*.
+        // Esto cubre la excepción del Righe de 12 líneas (donde RU se omite).
+        if (isFirstPhase && hasSobrante) {
+            phaseRefiloU = 0;
+            console.log(`[CNC-LOG] Fase ${i}: Primer fase CON V* | SUPRIME RU (Regla 12 Líneas)`);
+        } else {
+            // Caso general: Se EMITE RU con el valor del usuario.
+            // Esto cubre las 6 fases de la Righe de 33 líneas (la primera sin V*, las siguientes con V*).
+            phaseRefiloU = userRefilo;
+            console.log(`[CNC-LOG] Fase ${i}: EMITE RU con userRefilo (Regla 33 Líneas)`);
+        }
       } else {
         // No hay cortes U relevantes en esta fase.
         phaseRefiloU = 0;
         console.log(`[CNC-LOG] Fase ${i}: Sin cortes U | NO RU`);
       }
+      // -----------------------------------------------------------------------------------------
 
       console.log(`[CNC-LOG] Fase ${i} FINAL:`, {
         kind: 'horizontal',
