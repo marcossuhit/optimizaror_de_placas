@@ -6964,33 +6964,35 @@ async function renderSheetOverview() {
       inner.setAttribute('stroke-width', '1');
       svg.appendChild(inner);
 
-      if (pxW >= 40 && pxH >= 28) {
-        const baseFs = clamp(Math.min(pxW, pxH) * 0.16, 9, 15);
-        const isSmallPiece = Math.min(r.rawW, r.rawH) < 200;
-        const fontSize = isSmallPiece ? Math.max(5, Math.round(baseFs / 2)) : baseFs;
+      // Mostrar siempre las medidas, aunque la pieza sea pequeña
+      const baseFs = clamp(Math.min(pxW, pxH) * 0.16, 9, 15);
+      const minFontSize = 6;
+      const isSmallPiece = Math.min(r.rawW, r.rawH) < 200;
+      const fontSize = isSmallPiece ? Math.max(minFontSize, Math.round(baseFs / 2)) : baseFs;
 
-        const widthLabel = document.createElementNS(svgNS, 'text');
-        widthLabel.setAttribute('class', 'piece-label');
-        widthLabel.dataset.label = 'width';
-        widthLabel.setAttribute('text-anchor', 'middle');
-        widthLabel.setAttribute('dominant-baseline', 'alphabetic');
-        widthLabel.setAttribute('x', String(pxX + pxW / 2));
-        widthLabel.setAttribute('y', String(pxY + pxH - 21));
-        widthLabel.setAttribute('font-size', String(fontSize));
-        widthLabel.textContent = `${formatNumber(r.rawW, 0)}`;
-        svg.appendChild(widthLabel);
+      // Label de ancho (abajo, centrado)
+      const widthLabel = document.createElementNS(svgNS, 'text');
+      widthLabel.setAttribute('class', 'piece-label');
+      widthLabel.dataset.label = 'width';
+      widthLabel.setAttribute('text-anchor', 'middle');
+      widthLabel.setAttribute('dominant-baseline', 'alphabetic');
+      widthLabel.setAttribute('x', String(pxX + pxW / 2));
+      widthLabel.setAttribute('y', String(pxY + pxH - 8));
+      widthLabel.setAttribute('font-size', String(fontSize));
+      widthLabel.textContent = `${formatNumber(r.rawW, 0)}`;
+      svg.appendChild(widthLabel);
 
-        const heightLabel = document.createElementNS(svgNS, 'text');
-        heightLabel.setAttribute('class', 'piece-label');
-        heightLabel.dataset.label = 'height';
-        heightLabel.setAttribute('text-anchor', 'end');
-        heightLabel.setAttribute('x', String(pxX + pxW - 25));
-        heightLabel.setAttribute('y', String(pxY + pxH / 2));
-        heightLabel.setAttribute('font-size', String(fontSize));
-        heightLabel.setAttribute('dominant-baseline', 'middle');
-        heightLabel.textContent = `${formatNumber(r.rawH, 0)}`;
-        svg.appendChild(heightLabel);
-      }
+      // Label de alto (derecha, centrado vertical)
+      const heightLabel = document.createElementNS(svgNS, 'text');
+      heightLabel.setAttribute('class', 'piece-label');
+      heightLabel.dataset.label = 'height';
+      heightLabel.setAttribute('text-anchor', 'end');
+      heightLabel.setAttribute('x', String(pxX + pxW - 8));
+      heightLabel.setAttribute('y', String(pxY + pxH / 2));
+      heightLabel.setAttribute('font-size', String(fontSize));
+      heightLabel.setAttribute('dominant-baseline', 'middle');
+      heightLabel.textContent = `${formatNumber(r.rawH, 0)}`;
+      svg.appendChild(heightLabel);
       const rowEl = rowElements[r.rowIdx];
       let selection = { top: false, right: false, bottom: false, left: false };
       if (rowEl) {
