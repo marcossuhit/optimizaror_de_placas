@@ -3526,7 +3526,7 @@ function makePlateRow(options = {}) {
 
   const fW = document.createElement('div'); fW.className = 'field';
   const lW = document.createElement('label'); lW.textContent = 'Ancho (mm)';
-  const iW = document.createElement('input'); iW.className = 'plate-w'; iW.type = 'number'; iW.min = '0'; iW.step = '1'; iW.placeholder = 'Ej: 2440';
+  const iW = document.createElement('input'); iW.className = 'plate-w'; iW.type = 'number'; iW.min = '0'; iW.step = '1'; iW.placeholder = 'Ej: 2750';
   attachNumericFilter(iW, { allowBlank: false });
   if (widthValue !== '') iW.value = String(widthValue);
   if (readOnlySize) {
@@ -3537,7 +3537,7 @@ function makePlateRow(options = {}) {
 
   const fH = document.createElement('div'); fH.className = 'field';
   const lH = document.createElement('label'); lH.textContent = 'Alto (mm)';
-  const iH = document.createElement('input'); iH.className = 'plate-h'; iH.type = 'number'; iH.min = '0'; iH.step = '1'; iH.placeholder = 'Ej: 1220';
+  const iH = document.createElement('input'); iH.className = 'plate-h'; iH.type = 'number'; iH.min = '0'; iH.step = '1'; iH.placeholder = 'Ej: 1830';
   attachNumericFilter(iH, { allowBlank: false });
   if (heightValue !== '') iH.value = String(heightValue);
   if (readOnlySize) {
@@ -3556,7 +3556,7 @@ function makePlateRow(options = {}) {
   const trimControls = document.createElement('div');
   trimControls.className = 'trim-controls';
   const trimLabel = document.createElement('div'); trimLabel.className = 'trim-label'; trimLabel.innerHTML = 'Refilado <span class="trim-badge">naranja</span> (mm) + lados';
-  const trimMm = document.createElement('input'); trimMm.className = 'trim-mm'; trimMm.type = 'number'; trimMm.min = '0'; trimMm.step = '1'; trimMm.value = '13'; trimMm.title = 'Refilado en milímetros';
+  const trimMm = document.createElement('input'); trimMm.className = 'trim-mm'; trimMm.type = 'number'; trimMm.min = '0'; trimMm.step = '1'; trimMm.value = '5'; trimMm.title = 'Refilado en milímetros';
   attachNumericFilter(trimMm, { allowBlank: false });
   const sideTop = document.createElement('label'); sideTop.className = 'side'; const cTop = document.createElement('input'); cTop.type = 'checkbox'; sideTop.appendChild(cTop); sideTop.appendChild(document.createTextNode('Arriba'));
   const sideRight = document.createElement('label'); sideRight.className = 'side'; const cRight = document.createElement('input'); cRight.type = 'checkbox'; sideRight.appendChild(cRight); sideRight.appendChild(document.createTextNode('Derecha'));
@@ -4820,76 +4820,55 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
       inner.setAttribute('fill-opacity', '0.35');
       svg.appendChild(inner);
       
-      // Labels de dimensiones
-      if (pxW >= 40 && pxH >= 28) {
-        const fontSize = Math.max(8, Math.min(pxW, pxH) * 0.12);
-        
-        // Label de ancho
-        const widthLabel = document.createElementNS(svgNS, 'text');
-        widthLabel.setAttribute('class', 'piece-label');
-        widthLabel.setAttribute('text-anchor', 'middle');
-        widthLabel.setAttribute('x', String(pxX + pxW / 2));
-        widthLabel.setAttribute('y', String(pxY + pxH - 8));
-        widthLabel.setAttribute('font-size', String(fontSize));
-        widthLabel.setAttribute('fill', '#fff');
-        widthLabel.textContent = `${p.width.toFixed(0)}`;
-        svg.appendChild(widthLabel);
-        
-        // Label de alto (ROTADO VERTICALMENTE)
-        const heightLabel = document.createElementNS(svgNS, 'text');
-        heightLabel.setAttribute('class', 'piece-label');
-        heightLabel.setAttribute('text-anchor', 'middle');
-        heightLabel.setAttribute('x', String(pxX + pxW - 8));
-        heightLabel.setAttribute('y', String(pxY + pxH / 2));
-        heightLabel.setAttribute('font-size', String(fontSize));
-        heightLabel.setAttribute('fill', '#fff');
-        heightLabel.setAttribute('transform', `rotate(-90 ${pxX + pxW - 8} ${pxY + pxH / 2})`);
-        heightLabel.textContent = `${p.height.toFixed(0)}`;
-        svg.appendChild(heightLabel);
-        
-        // Número de corte en el centro
-        const cutNumberFontSize = Math.max(10, Math.min(pxW, pxH) * 0.15);
-        const cutNumberLabel = document.createElementNS(svgNS, 'text');
-        cutNumberLabel.setAttribute('class', 'piece-cut-number');
-        cutNumberLabel.setAttribute('text-anchor', 'middle');
-        cutNumberLabel.setAttribute('x', String(pxX + pxW / 2));
-        cutNumberLabel.setAttribute('y', String(pxY + pxH / 2 + cutNumberFontSize / 3));
-        cutNumberLabel.setAttribute('font-size', String(cutNumberFontSize));
-        cutNumberLabel.setAttribute('fill', '#fff');
-        cutNumberLabel.setAttribute('font-weight', 'bold');
-        cutNumberLabel.setAttribute('stroke', '#000');
-        cutNumberLabel.setAttribute('stroke-width', '0.5');
-        cutNumberLabel.textContent = String(cutNumber);
-        svg.appendChild(cutNumberLabel);
-        
-        // Indicador de rotación
-        if (p.piece.rotated) {
-          const rotLabel = document.createElementNS(svgNS, 'text');
-          rotLabel.setAttribute('class', 'piece-label');
-          rotLabel.setAttribute('text-anchor', 'start');
-          rotLabel.setAttribute('x', String(pxX + 8));
-          rotLabel.setAttribute('y', String(pxY + 16));
-          rotLabel.setAttribute('font-size', String(fontSize));
-          rotLabel.setAttribute('fill', '#fbbf24');
-          rotLabel.setAttribute('font-weight', 'bold');
-          rotLabel.textContent = '↻';
-          svg.appendChild(rotLabel);
-        }
-      } else {
-        // Para piezas pequeñas, solo mostrar el número de corte
-        const cutNumberFontSize = Math.max(8, Math.min(pxW, pxH) * 0.25);
-        const cutNumberLabel = document.createElementNS(svgNS, 'text');
-        cutNumberLabel.setAttribute('class', 'piece-cut-number');
-        cutNumberLabel.setAttribute('text-anchor', 'middle');
-        cutNumberLabel.setAttribute('x', String(pxX + pxW / 2));
-        cutNumberLabel.setAttribute('y', String(pxY + pxH / 2 + cutNumberFontSize / 3));
-        cutNumberLabel.setAttribute('font-size', String(cutNumberFontSize));
-        cutNumberLabel.setAttribute('fill', '#fff');
-        cutNumberLabel.setAttribute('font-weight', 'bold');
-        cutNumberLabel.setAttribute('stroke', '#000');
-        cutNumberLabel.setAttribute('stroke-width', '0.5');
-        cutNumberLabel.textContent = String(cutNumber);
-        svg.appendChild(cutNumberLabel);
+      // Labels de dimensiones: SIEMPRE mostrar medidas y número de corte
+      const fontSize = Math.max(6, Math.min(pxW, pxH) * 0.12);
+      // Label de ancho
+      const widthLabel = document.createElementNS(svgNS, 'text');
+      widthLabel.setAttribute('class', 'piece-label');
+      widthLabel.setAttribute('text-anchor', 'middle');
+      widthLabel.setAttribute('x', String(pxX + pxW / 2));
+      widthLabel.setAttribute('y', String(pxY + pxH - 8));
+      widthLabel.setAttribute('font-size', String(fontSize));
+      widthLabel.setAttribute('fill', '#fff');
+      widthLabel.textContent = `${p.width.toFixed(0)}`;
+      svg.appendChild(widthLabel);
+      // Label de alto (ROTADO VERTICALMENTE)
+      const heightLabel = document.createElementNS(svgNS, 'text');
+      heightLabel.setAttribute('class', 'piece-label');
+      heightLabel.setAttribute('text-anchor', 'middle');
+      heightLabel.setAttribute('x', String(pxX + pxW - 8));
+      heightLabel.setAttribute('y', String(pxY + pxH / 2));
+      heightLabel.setAttribute('font-size', String(fontSize));
+      heightLabel.setAttribute('fill', '#fff');
+      heightLabel.setAttribute('transform', `rotate(-90 ${pxX + pxW - 8} ${pxY + pxH / 2})`);
+      heightLabel.textContent = `${p.height.toFixed(0)}`;
+      svg.appendChild(heightLabel);
+      // Número de corte en el centro
+      const cutNumberFontSize = Math.max(8, Math.min(pxW, pxH) * 0.15);
+      const cutNumberLabel = document.createElementNS(svgNS, 'text');
+      cutNumberLabel.setAttribute('class', 'piece-cut-number');
+      cutNumberLabel.setAttribute('text-anchor', 'middle');
+      cutNumberLabel.setAttribute('x', String(pxX + pxW / 2));
+      cutNumberLabel.setAttribute('y', String(pxY + pxH / 2 + cutNumberFontSize / 3));
+      cutNumberLabel.setAttribute('font-size', String(cutNumberFontSize));
+      cutNumberLabel.setAttribute('fill', '#fff');
+      cutNumberLabel.setAttribute('font-weight', 'bold');
+      cutNumberLabel.setAttribute('stroke', '#000');
+      cutNumberLabel.setAttribute('stroke-width', '0.5');
+      cutNumberLabel.textContent = String(cutNumber);
+      svg.appendChild(cutNumberLabel);
+      // Indicador de rotación
+      if (p.piece.rotated) {
+        const rotLabel = document.createElementNS(svgNS, 'text');
+        rotLabel.setAttribute('class', 'piece-label');
+        rotLabel.setAttribute('text-anchor', 'start');
+        rotLabel.setAttribute('x', String(pxX + 8));
+        rotLabel.setAttribute('y', String(pxY + 16));
+        rotLabel.setAttribute('font-size', String(fontSize));
+        rotLabel.setAttribute('fill', '#fbbf24');
+        rotLabel.setAttribute('font-weight', 'bold');
+        rotLabel.textContent = '↻';
+        svg.appendChild(rotLabel);
       }
       
       // Dibujar indicadores de cubre cantos
