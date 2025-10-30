@@ -135,8 +135,17 @@ const WHATSAPP_MESSAGE = 'Fernando te envio la planificacion de cortes.';
 const sendCutsDefaultLabel = sendCutsBtn?.textContent || 'Enviar cortes';
 const StockSync = window.StockSync || null;
 const REMOTE_STOCK_SYNC_ENABLED = !!(StockSync && typeof StockSync.isConfigured === 'function' && StockSync.isConfigured());
-const DEFAULT_PLATE_WIDTH = 2750;
-const DEFAULT_PLATE_HEIGHT = 1830;
+const DEFAULT_PLATE_WIDTH_ADMIN = 2750;
+const DEFAULT_PLATE_HEIGHT_ADMIN = 1830;
+const DEFAULT_PLATE_WIDTH_USER = 2740;
+const DEFAULT_PLATE_HEIGHT_USER = 1820;
+
+function getDefaultPlateWidth() {
+  return isBackofficeAllowed ? DEFAULT_PLATE_WIDTH_ADMIN : DEFAULT_PLATE_WIDTH_USER;
+}
+function getDefaultPlateHeight() {
+  return isBackofficeAllowed ? DEFAULT_PLATE_HEIGHT_ADMIN : DEFAULT_PLATE_HEIGHT_USER;
+}
 const EMAIL_PROVIDER_ENDPOINT = typeof window.EMAIL_PROVIDER_ENDPOINT === 'string' ? window.EMAIL_PROVIDER_ENDPOINT : '';
 
 const LS_KEY = 'cortes_proyecto_v1';
@@ -3509,8 +3518,8 @@ function ensureKerfField() {
 
 function makePlateRow(options = {}) {
   const readOnlySize = !!options.readOnlySize;
-  const widthValue = options.width != null ? options.width : (readOnlySize ? DEFAULT_PLATE_WIDTH : '');
-  const heightValue = options.height != null ? options.height : (readOnlySize ? DEFAULT_PLATE_HEIGHT : '');
+  const widthValue = options.width != null ? options.width : (readOnlySize ? getDefaultPlateWidth() : '');
+  const heightValue = options.height != null ? options.height : (readOnlySize ? getDefaultPlateHeight() : '');
 
   const row = document.createElement('div');
   row.className = 'plate-row';
@@ -3560,6 +3569,10 @@ function makePlateRow(options = {}) {
   trimControls.appendChild(sideBottom);
   trimControls.appendChild(sideLeft);
   trim.appendChild(trimControls);
+
+  // Ocultar visualmente los inputs de derecha y abajo
+  sideRight.style.display = 'none';
+  sideBottom.style.display = 'none';
 
   if (!isBackofficeAllowed) {
     trim.style.display = 'none';
@@ -3623,12 +3636,12 @@ function enforceDefaultPlateSize(row) {
   const heightInput = row.querySelector('input.plate-h');
   const quantityInput = row.querySelector('input.plate-c');
   if (widthInput) {
-    widthInput.value = String(DEFAULT_PLATE_WIDTH);
+    widthInput.value = String(getDefaultPlateWidth());
     widthInput.disabled = true;
     widthInput.classList.add('readonly-input');
   }
   if (heightInput) {
-    heightInput.value = String(DEFAULT_PLATE_HEIGHT);
+    heightInput.value = String(getDefaultPlateHeight());
     heightInput.disabled = true;
     heightInput.classList.add('readonly-input');
   }
@@ -3648,8 +3661,8 @@ if (platesEl && addPlateBtn) {
   const appendPlateRow = () => {
     const row = makePlateRow(isBackofficeAllowed ? {} : {
       readOnlySize: true,
-      width: DEFAULT_PLATE_WIDTH,
-      height: DEFAULT_PLATE_HEIGHT
+      width: getDefaultPlateWidth(),
+      height: getDefaultPlateHeight()
     });
     platesEl.appendChild(row);
     enforceDefaultPlateSize(row);
@@ -4510,8 +4523,8 @@ async function renderWithAdvancedOptimizer() {
     }
     
     const firstPlate = plateRows[0];
-    const plateWidth = firstPlate.sw || 2750;
-    const plateHeight = firstPlate.sh || 1830;
+    const plateWidth = firstPlate.sw || 2740;
+    const plateHeight = firstPlate.sh || 1820;
     const trimMm = firstPlate.trim?.mm || 0;
     const trimLeft = firstPlate.trim?.left ? trimMm : 0;
     const trimTop = firstPlate.trim?.top ? trimMm : 0;
@@ -8309,8 +8322,8 @@ function generateCNCFiles() {
     const plateMeta = hasDisplayedPlacements ? (currentDisplayedPlateSpecs[index] || null) : null;
     const plateInstance = {
       id: `plate-${index}`,
-      width: plateMeta?.width ?? inst.width ?? inst.sw ?? basePlate.sw ?? 2750,
-      height: plateMeta?.height ?? inst.height ?? inst.sh ?? basePlate.sh ?? 1830,
+      width: plateMeta?.width ?? inst.width ?? inst.sw ?? basePlate.sw ?? 2740,
+      height: plateMeta?.height ?? inst.height ?? inst.sh ?? basePlate.sh ?? 1820,
       material: plateMeta?.material ?? inst.material ?? basePlate.material ?? currentMaterialName ?? 'Material'
     };
     
@@ -8357,8 +8370,8 @@ function generateCNCFiles() {
 function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
   const platePlacements = Array.isArray(placements) ? placements : [];
 
-  const plateWidth = instance.width || 2750;
-  const plateHeight = instance.height || 1830;
+  const plateWidth = instance.width || 2740;
+  const plateHeight = instance.height || 1820;
   const plateMaterial = instance.material || 'Material';
   const plateThickness = 18;
 
