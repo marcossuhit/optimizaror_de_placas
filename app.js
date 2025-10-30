@@ -1,7 +1,7 @@
 // Genera las entradas [Righe] a partir de un plan de corte
 /**
  * Función que genera las entradas [Righe] a partir de un plan de corte (JSON).
- * Esta función ha sido corregida para manejar múltiples cortes V consecutivos.
+ * Esta función ha sido corregida para manejar la estructura de Sobrante U/V flexible.
  */
 function collectRigheEntriesFromPlan(plan) {
   if (!plan || !Array.isArray(plan.phases)) {
@@ -33,21 +33,37 @@ function collectRigheEntriesFromPlan(plan) {
       });
 
     } else if (phase.kind === 'horizontal') {
-      // Lógica de Patrón Horizontal (X, U, V*) - SIN RU
+      // Lógica de Patrón Horizontal (X, RU, U, V*)
       entries.push({ command: 'X', measure: phase.largo, quantity: phase.cantidad || 1 });
-      // NO agregar RU
+      if (Number.isFinite(phase.refiloU) && phase.refiloU > 0) {
+        entries.push({ command: 'RU', measure: phase.refiloU, quantity: 1 });
+      }
+      
       // Cortes U (principales)
       (Array.isArray(phase.cortesU) ? phase.cortesU : []).forEach(corte => {
         entries.push({ command: 'U', measure: corte, quantity: 1 });
       });
-      // Sobrante V* - LÓGICA CORREGIDA PARA V* -> U -> V -> V
-      const sobrante = phase.sobrante;
-      if (sobrante && Number.isFinite(sobrante.ancho_u) && sobrante.ancho_u > 0) {
+      
+      // Sobrante V* - LÓGICA CORREGIDA PARA V* -> U -> V -> U -> V
+      const combinedUVPairs = phase.sobrante; // Ahora es el arreglo de pares U/V
+      
+      if (Array.isArray(combinedUVPairs) && combinedUVPairs.length > 0) {
         entries.push({ command: 'V*', measure: 0, quantity: 1 });
-        entries.push({ command: 'U', measure: sobrante.ancho_u, quantity: 1 });
-        const cortesV = Array.isArray(sobrante.cortes_v) ? sobrante.cortes_v : [];
-        cortesV.forEach(corteV => {
-          entries.push({ command: 'V', measure: corteV, quantity: 1 });
+        
+        // 💥 ITERAR sobre cada par U/V
+        combinedUVPairs.forEach(uvPair => {
+            const ancho_u = uvPair.ancho_u;
+            const cortes_v = Array.isArray(uvPair.cortes_v) ? uvPair.cortes_v : [];
+
+            // Generar U solo si hay un ancho válido
+            if (Number.isFinite(ancho_u) && ancho_u > 0) {
+                entries.push({ command: 'U', measure: ancho_u, quantity: 1 });
+                
+                // Generar todos los V asociados
+                cortes_v.forEach(corteV => {
+                    entries.push({ command: 'V', measure: corteV, quantity: 1 });
+                });
+            }
         });
       }
     }
@@ -55,6 +71,7 @@ function collectRigheEntriesFromPlan(plan) {
 
   return entries;
 }
+
 const MAX_ROWS = Number.MAX_SAFE_INTEGER;
 
 // Flag para indicar si estamos mostrando el plano del optimizador avanzado
@@ -8002,8 +8019,8 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
   const placements = plate.getPlacedPiecesWithCoords();
   if (!Array.isArray(placements) || placements.length === 0) return null;
 
-  // La lógica: 0 si hay V*, sino usa el valor de entrada del usuario
-  const userRefilo = Number(uiTrim.mm); // Valor del refilo de limpieza (ej. 5.0)
+  // La lógica para RU se ha eliminado para enfocarse en X -> U
+  const userRefilo = Number(uiTrim.mm) || 0; 
 
   // --- Helper Functions and Constants ---
   function numbersAlmostEqual(a, b, tolerance = 0.01) { return Math.abs(Number(a) - Number(b)) < tolerance; }
@@ -8040,7 +8057,7 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
   const finalPhases = [];
 
   // 3. Create final Phases with CORRECCIÓN de Sobrante
-  for (let i = 0; i < sortedFranjas.length; i++) { // <-- 'i' es el índice de la fase (0, 1, 2, ...)
+  for (let i = 0; i < sortedFranjas.length; i++) {
       const franja = sortedFranjas[i];
       
       // CRÍTICO: Si ya fue marcado como sobrante de una fase anterior, la saltamos.
@@ -8056,13 +8073,13 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
       }
 
       let sobranteData = null;
-      let firstSobranteAnchoU = -1;
       let firstSobranteY = -1; 
-      const combinedCortesV = [];
+      // 💥 NUEVA ESTRUCTURA: Almacenará [{ ancho_u: 234, cortes_v: [390] }, { ancho_u: 130, cortes_v: [502] }]
+      const combinedUVPairs = []; 
       let lastProcessedBottomY = currentMainFranjaBottomY; 
       
 
-      // --- BUCLE DE ACUMULACIÓN DE SOBRANTES (j) --- (Lógica de apilamiento H/V sin cambios)
+      // --- BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
       for (let j = i + 1; j < sortedFranjas.length; j++) {
           const potentialSobranteFranja = sortedFranjas[j];
           if (potentialSobranteFranja.isSobrante) continue;
@@ -8079,7 +8096,21 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
               break; 
           }
           
-          const isFirstSobrante = (combinedCortesV.length === 0);
+          const isFirstSobrante = (combinedUVPairs.length === 0);
+          
+          // 💥 DEBUGGING LOGS (Mantenidos para la prueba final)
+          console.log(`[DEBUG_RIGHE] i=${i}, j=${j}`);
+          console.log(`[DEBUG_RIGHE]  - Franja Principal (i): Largo=${franja.largo}, X=${franja.x}, BottomY=${currentMainFranjaBottomY}`);
+          console.log(`[DEBUG_RIGHE]  - Candidato (j): Largo=${potentialSobranteFranja.largo}, X=${potentialSobranteFranja.x}, isSobrante=${potentialSobranteFranja.isSobrante}`);
+          console.log(`[DEBUG_RIGHE]  - AnchoU Candidato: ${potentialAnchoU}, Uniforme: ${uniformHeight}, CortesV count: ${potentialCortesV.length}`);
+          console.log(`[DEBUG_RIGHE]  - Es Primer Sobrante?: ${isFirstSobrante}`);
+          if (!isFirstSobrante) {
+              // Obtener datos del primer par (el primero en combinedUVPairs)
+              const firstUVPair = combinedUVPairs[0];
+              const firstSobranteAnchoU = firstUVPair.ancho_u; // Usado solo para debug/contexto.
+              console.log(`[DEBUG_RIGHE]  - Data Sobrante Existente: FirstU=${firstSobranteAnchoU}, FirstY=${firstSobranteY}, LastBottomY=${lastProcessedBottomY}`);
+          }
+          // 💥 FIN DEBUGGING LOGS
 
           if (isFirstSobrante) {
               // --- LÓGICA PARA EL *PRIMER* SOBRANTE ---
@@ -8089,98 +8120,107 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
               const startsBelow = firstPieceY !== undefined &&
                   (firstPieceY >= lastProcessedBottomY - kerfValue && firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
 
+              console.log(`[DEBUG_RIGHE]    - Condición: !similarLargo=${!similarLargo}, similarX=${similarX}, startsBelow=${startsBelow}`);
+
               if (!similarLargo && similarX && startsBelow) {
                   // Es el primer sobrante V* válido
-                  firstSobranteAnchoU = potentialAnchoU;
-                  firstSobranteY = firstPieceY; 
-                  combinedCortesV.push(...potentialCortesV);
+                  firstSobranteY = firstPieceY; // Se usa para la Opción H subsecuente
+                  
+                  // 💥 ALMACENAR COMO PAR U/V
+                  combinedUVPairs.push({
+                      ancho_u: potentialAnchoU, 
+                      cortes_v: potentialCortesV.slice() 
+                  });
                   potentialSobranteFranja.isSobrante = true; 
                   lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
                                          potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
+                  console.log(`[DEBUG_RIGHE]    - ✅ ACUMULADO como PRIMER SOBRANTE`);
                   continue; 
+              } else {
+                  console.log(`[DEBUG_RIGHE]    - ❌ NO ACUMULADO como Primer Sobrante. BREAK.`);
+                  break;
               }
 
           } else {
               // --- LÓGICA PARA SOBRANTES *SUBSECUENTES* ---
               
-              if (!numbersAlmostEqual(potentialAnchoU, firstSobranteAnchoU, WIDTH_TOLERANCE)) {
-                  break; 
-              }
+              const lastUVPair = combinedUVPairs[combinedUVPairs.length - 1];
+              // El ancho U del candidato
+              const candidateAnchoU = potentialAnchoU;
 
-              // OPCIÓN 1: Apilado Verticalmente 
+              // 💥 NUEVA REGLA: Si el ancho U del candidato es el mismo que el último par agregado,
+              // FUSIONAR los cortes V en el último par, SIN crear un nuevo U.
+              const isSameAnchoU = numbersAlmostEqual(candidateAnchoU, lastUVPair.ancho_u, WIDTH_TOLERANCE);
+
+              // OPCIÓN 1: Apilado Verticalmente (RELAJADO)
               const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
-              const expectedY_strict = lastProcessedBottomY + kerfValue;
-              const startsBelow_Vertical = numbersAlmostEqual(expectedY_strict, firstPieceY, POSITION_TOLERANCE);
-
-              if (similarX && startsBelow_Vertical) {
-                  // Acumula verticalmente
-                  combinedCortesV.push(...potentialCortesV);
-                  potentialSobranteFranja.isSobrante = true;
-                  lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
-                                         potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
-                  continue; 
-              }
-
+              const expectedY = lastProcessedBottomY + kerfValue;
+              const startsBelow_Vertical_Relaxed = firstPieceY !== undefined &&
+                  (firstPieceY >= lastProcessedBottomY - kerfValue && 
+                   firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
+                   
               // OPCIÓN 2: Agrupado Horizontalmente 
               const startsAtSameY_Horizontal = numbersAlmostEqual(firstSobranteY, firstPieceY, POSITION_TOLERANCE);
 
-              if (startsAtSameY_Horizontal) {
-                  // Acumula horizontalmente 
-                  combinedCortesV.push(...potentialCortesV);
+              if (similarX && startsBelow_Vertical_Relaxed || startsAtSameY_Horizontal) {
+                  
+                  // Si el ancho U es el mismo, FUSIONAR los cortes V.
+                  if (isSameAnchoU) {
+                      lastUVPair.cortes_v.push(...potentialCortesV); // Añade los V al último par U
+                  } else {
+                      // Si el ancho U es diferente, debe empezar una nueva tira U (TU CASO ANTERIOR)
+                      combinedUVPairs.push({
+                          ancho_u: potentialAnchoU, 
+                          cortes_v: potentialCortesV.slice() 
+                      });
+                  }
+                  
                   potentialSobranteFranja.isSobrante = true;
+                  
+                  // Solo actualizar lastProcessedBottomY si es apilamiento vertical
+                  if (similarX && startsBelow_Vertical_Relaxed) {
+                      lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
+                                             potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
+                  }
+                  
                   continue; 
               }
           }
           
-          break; 
+          break; // Rompe si no se cumple ninguna condición.
       } // --- FIN BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
 
 
       // 4. Add the main phase
       
-      if (combinedCortesV.length > 0) {
-          sobranteData = {
-              ancho_u: firstSobranteAnchoU,
-              cortes_v: combinedCortesV
-          };
+      if (combinedUVPairs.length > 0) {
+          sobranteData = combinedUVPairs; // 💥 Almacenar el arreglo de pares
       }
 
-      // -----------------------------------------------------------------------------------------
-      // *** CORRECCIÓN CLAVE para RU: Regla de la PRIMERA FASE CON V* ***
+      // *** Asignación de RU - (Se asume que la regla es SI HAY CORTES U, se aplica RU, y no se anula por V*) ***
+      //const phaseRefiloU = (Array.isArray(cortesU) && cortesU.length > 0) ? userRefilo : 0;
+
+      // ----------------------------------------------------------------------
+      // 💥 CORRECCIÓN FINAL PARA RU: Anular RU si hay Sobrante V*
+      // ----------------------------------------------------------------------
+      const tieneCortesU = Array.isArray(cortesU) && cortesU.length > 0;
+      const tieneSobranteVstar = !!sobranteData; // Es true si combinedUVPairs.length > 0
+
       let phaseRefiloU = 0;
-      
-      if (Array.isArray(cortesU) && cortesU.length > 0) {
-        // Hay piezas U en esta fase.
-        const hasSobrante = !!sobranteData;
-        const isFirstPhase = i === 0;
-        
-        // Regla de Lepton Inferencia: Se SUPRIME RU solo para la PRIMERA tira X (i=0) que tiene V*.
-        // Esto cubre la excepción del Righe de 12 líneas (donde RU se omite).
-        if (isFirstPhase && hasSobrante) {
-            phaseRefiloU = 0;
-            console.log(`[CNC-LOG] Fase ${i}: Primer fase CON V* | SUPRIME RU (Regla 12 Líneas)`);
-        } else {
-            // Caso general: Se EMITE RU con el valor del usuario.
-            // Esto cubre las 6 fases de la Righe de 33 líneas (la primera sin V*, las siguientes con V*).
-            phaseRefiloU = userRefilo;
-            console.log(`[CNC-LOG] Fase ${i}: EMITE RU con userRefilo (Regla 33 Líneas)`);
-        }
-      } else {
-        // No hay cortes U relevantes en esta fase.
-        phaseRefiloU = 0;
-        console.log(`[CNC-LOG] Fase ${i}: Sin cortes U | NO RU`);
+
+      if (tieneCortesU) {
+          if (tieneSobranteVstar) {
+              // Regla 1 (Ejemplo 1): Si hay Sobrante V* (V* empieza después de U),
+              // se asume que se consumió el remanente y NO hay espacio para RU.
+              phaseRefiloU = 0;
+          } else {
+              // Regla 2 (Ejemplo 2, Fases que terminan sin V*):
+              // Si hay cortes U y la fase termina normalmente (sin V*), se aplica el RU.
+              // Esto cubre las fases 1, 3, 4, 5 de tu segundo ejemplo.
+              phaseRefiloU = userRefilo;
+          }
       }
-      // -----------------------------------------------------------------------------------------
-
-      console.log(`[CNC-LOG] Fase ${i} FINAL:`, {
-        kind: 'horizontal',
-        largo: franja.largo,
-        cantidad: 1,
-        refiloU: phaseRefiloU,
-        cortesU: cortesU,
-        sobrante: sobranteData
-      });
-
+      
       finalPhases.push({
           kind: 'horizontal',
           largo: franja.largo,
@@ -8189,6 +8229,9 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           cortesU: cortesU,
           sobrante: sobranteData
       });
+      
+      // 💥 LOG FINAL PARA REVISAR LA ESTRUCTURA GENERADA
+      console.log(`[DEBUG_RIGHE] Fase ${i} Finalizada. SobranteData Generado:`, sobranteData);
 
   } // End main loop (i)
 
