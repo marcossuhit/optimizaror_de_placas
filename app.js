@@ -8081,10 +8081,11 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           // 3. Verificar estructura V* (alto uniforme)
           potentialSobranteFranja.placements.sort((a, b) => a.y - b.y);
           const potentialAnchoU = potentialSobranteFranja.placements[0]?.height;
-          const uniformHeight = potentialSobranteFranja.placements.every(p => numbersAlmostEqual(p.height, potentialAnchoU, WIDTH_TOLERANCE));
+          //const uniformHeight = potentialSobranteFranja.placements.every(p => numbersAlmostEqual(p.height, potentialAnchoU, WIDTH_TOLERANCE));
           const potentialCortesV = potentialSobranteFranja.placements.map(p => p.width);
 
-          if (!uniformHeight || potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
+          //if (!uniformHeight || potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
+          if (potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
               break; 
           }
           
@@ -8094,7 +8095,7 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           console.log(`[DEBUG_RIGHE] i=${i}, j=${j}`);
           console.log(`[DEBUG_RIGHE]  - Franja Principal (i): Largo=${franja.largo}, X=${franja.x}, BottomY=${currentMainFranjaBottomY}`);
           console.log(`[DEBUG_RIGHE]  - Candidato (j): Largo=${potentialSobranteFranja.largo}, X=${potentialSobranteFranja.x}, isSobrante=${potentialSobranteFranja.isSobrante}`);
-          console.log(`[DEBUG_RIGHE]  - AnchoU Candidato: ${potentialAnchoU}, Uniforme: ${uniformHeight}, CortesV count: ${potentialCortesV.length}`);
+         // console.log(`[DEBUG_RIGHE]  - AnchoU Candidato: ${potentialAnchoU}, Uniforme: ${uniformHeight}, CortesV count: ${potentialCortesV.length}`);
           console.log(`[DEBUG_RIGHE]  - Es Primer Sobrante?: ${isFirstSobrante}`);
           if (!isFirstSobrante) {
               // Obtener datos del primer par (el primero en combinedUVPairs)
