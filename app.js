@@ -8081,29 +8081,16 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           // 3. Verificar estructura V* (alto uniforme)
           potentialSobranteFranja.placements.sort((a, b) => a.y - b.y);
           const potentialAnchoU = potentialSobranteFranja.placements[0]?.height;
-          //const uniformHeight = potentialSobranteFranja.placements.every(p => numbersAlmostEqual(p.height, potentialAnchoU, WIDTH_TOLERANCE));
+          const uniformHeight = potentialSobranteFranja.placements.every(p => numbersAlmostEqual(p.height, potentialAnchoU, WIDTH_TOLERANCE));
           const potentialCortesV = potentialSobranteFranja.placements.map(p => p.width);
 
-          //if (!uniformHeight || potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
-          if (potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
+          if (!uniformHeight || potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
+          //if (potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
               break; 
           }
           
           const isFirstSobrante = (combinedUVPairs.length === 0);
           
-          // 💥 DEBUGGING LOGS (Mantenidos para la prueba final)
-          console.log(`[DEBUG_RIGHE] i=${i}, j=${j}`);
-          console.log(`[DEBUG_RIGHE]  - Franja Principal (i): Largo=${franja.largo}, X=${franja.x}, BottomY=${currentMainFranjaBottomY}`);
-          console.log(`[DEBUG_RIGHE]  - Candidato (j): Largo=${potentialSobranteFranja.largo}, X=${potentialSobranteFranja.x}, isSobrante=${potentialSobranteFranja.isSobrante}`);
-         // console.log(`[DEBUG_RIGHE]  - AnchoU Candidato: ${potentialAnchoU}, Uniforme: ${uniformHeight}, CortesV count: ${potentialCortesV.length}`);
-          console.log(`[DEBUG_RIGHE]  - Es Primer Sobrante?: ${isFirstSobrante}`);
-          if (!isFirstSobrante) {
-              // Obtener datos del primer par (el primero en combinedUVPairs)
-              const firstUVPair = combinedUVPairs[0];
-              const firstSobranteAnchoU = firstUVPair.ancho_u; // Usado solo para debug/contexto.
-              console.log(`[DEBUG_RIGHE]  - Data Sobrante Existente: FirstU=${firstSobranteAnchoU}, FirstY=${firstSobranteY}, LastBottomY=${lastProcessedBottomY}`);
-          }
-          // 💥 FIN DEBUGGING LOGS
 
           if (isFirstSobrante) {
               // --- LÓGICA PARA EL *PRIMER* SOBRANTE ---
