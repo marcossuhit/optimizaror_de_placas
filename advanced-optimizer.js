@@ -110,21 +110,21 @@ class Shelf {
   }
 
   addPiece(piece) {
-    // Verificar si la pieza cabe en alto
+    // Limitar a una sola pieza por shelf para evitar apilar lateralmente
+    if (this.pieces.length > 0) {
+      return false;
+    }
+
     if (piece.height > this.height + EPSILON) {
       return false;
     }
 
-    // Verificar si hay ancho suficiente
-    const requiredWidth = this.currentWidth + piece.width + 
-                         (this.pieces.length > 0 ? this.kerf : 0);
-    
-    if (requiredWidth > this.maxWidth + EPSILON) {
+    if (piece.width > this.maxWidth + EPSILON) {
       return false;
     }
 
     this.pieces.push(piece);
-    this.currentWidth = requiredWidth;
+    this.currentWidth = piece.width;
     return true;
   }
 }

@@ -2029,62 +2029,6 @@ function hasUnplacedPiecesLocal(pool) {
   return false;
 }
 
-function pickStripStarterLocal(state, pool, allowAutoRotate, remainingWidth) {
-  if (remainingWidth <= PACKING_EPSILON) return null;
-  let best = null;
-
-  for (let idx = 0; idx < pool.length && !forceStopSolver; idx++) {
-    const entry = pool[idx];
-    if (entry.placed) continue;
-    const orientations = getOrientationChoicesLocal(entry, allowAutoRotate);
-    for (const orientation of orientations) {
-      if (orientation.width > state.usableW + PACKING_EPSILON) continue;
-      if (orientation.height > state.usableH + PACKING_EPSILON) continue;
-      if (orientation.width > remainingWidth + PACKING_EPSILON) continue;
-      const gap = remainingWidth - orientation.width;
-      if (!best ||
-          gap < best.gap - PACKING_EPSILON ||
-          (Math.abs(gap - best.gap) <= PACKING_EPSILON && orientation.width > best.orientation.width + PACKING_EPSILON) ||
-          (Math.abs(gap - best.gap) <= PACKING_EPSILON && Math.abs(orientation.width - best.orientation.width) <= PACKING_EPSILON &&
-           orientation.height > best.orientation.height + PACKING_EPSILON)) {
-        best = {
-          index: idx,
-          orientation,
-          gap
-        };
-      }
-    }
-  }
-
-  return best;
-}
-
-function pickPieceForStripLocal(pool, targetWidth, allowAutoRotate, maxHeight) {
-  if (maxHeight <= PACKING_EPSILON) return null;
-  let best = null;
-
-  for (let idx = 0; idx < pool.length && !forceStopSolver; idx++) {
-    const entry = pool[idx];
-    if (entry.placed) continue;
-    const orientations = getOrientationChoicesLocal(entry, allowAutoRotate);
-    for (const orientation of orientations) {
-      if (Math.abs(orientation.width - targetWidth) > PACKING_EPSILON) continue;
-      if (orientation.height > maxHeight + PACKING_EPSILON) continue;
-      if (!best ||
-          orientation.height > best.orientation.height + PACKING_EPSILON ||
-          (Math.abs(orientation.height - best.orientation.height) <= PACKING_EPSILON && entry.area > best.entry.area + PACKING_EPSILON)) {
-        best = {
-          index: idx,
-          entry,
-          orientation
-        };
-      }
-    }
-  }
-
-  return best;
-}
-
 function recordPlacementLocal(strip, y, entry, orientation, plateIdx, placements, placementsByPlate, bestOrder, metrics) {
   const placement = {
     id: entry.id,
@@ -2112,19 +2056,141 @@ function recordPlacementLocal(strip, y, entry, orientation, plateIdx, placements
   metrics.usedArea += orientation.width * orientation.height;
 }
 
-function fillStripWithPiecesLocal(state, strip, pool, allowAutoRotate, kerf, plateIdx, placements, placementsByPlate, bestOrder, metrics) {
-  while (!forceStopSolver) {
-    const remainingHeight = state.offY + state.usableH - strip.nextY;
-    const effectiveMax = remainingHeight - kerf;
-    if (effectiveMax <= PACKING_EPSILON) break;
+const DEFAULT_COLUMN_WIDTH_TOLERANCE = 0.5;
 
-    const candidate = pickPieceForStripLocal(pool, strip.width, allowAutoRotate, effectiveMax);
-    if (!candidate) break;
+function normalizeColumnWidth(width, tolerance) {
+  if (!Number.isFinite(width) || width <= 0) {
+    return 0;
+  }
+  const step = Math.max(tolerance || DEFAULT_COLUMN_WIDTH_TOLERANCE, 0.05);
+  const normalized = Math.round(width / step) * step;
+  return Number(normalized.toFixed(3));
+}
 
-    strip.nextY += kerf;
-    const y = strip.nextY;
-    recordPlacementLocal(strip, y, candidate.entry, candidate.orientation, plateIdx, placements, placementsByPlate, bestOrder, metrics);
-    strip.nextY = y + candidate.orientation.height;
+function selectPreferredOrientationForState(entry, allowAutoRotate, maxWidth, maxHeight) {
+  const orientations = getOrientationChoicesLocal(entry, allowAutoRotate);
+  let best = null;
+
+  for (const orientation of orientations) {
+    if (orientation.width > maxWidth + PACKING_EPSILON) continue;
+    if (orientation.height > maxHeight + PACKING_EPSILON) continue;
+
+    const widthScore = orientation.width;
+    const heightScore = orientation.height;
+
+    if (!best ||
+        widthScore < best.widthScore - PACKING_EPSILON ||
+        (Math.abs(widthScore - best.widthScore) <= PACKING_EPSILON && heightScore > best.heightScore + PACKING_EPSILON) ||
+        (Math.abs(widthScore - best.widthScore) <= PACKING_EPSILON && Math.abs(heightScore - best.heightScore) <= PACKING_EPSILON && orientation.rotated && !best.orientation.rotated)) {
+      best = {
+        orientation,
+        widthScore,
+        heightScore
+      };
+    }
+  }
+
+  return best ? best.orientation : null;
+}
+
+function buildColumnPlan({
+  state,
+  pool,
+  plateIdx,
+  allowAutoRotate,
+  kerf,
+  columnWidthTolerance,
+  placements,
+  placementsByPlate,
+  bestOrder,
+  metrics
+}) {
+  const tolerance = Math.max(columnWidthTolerance || DEFAULT_COLUMN_WIDTH_TOLERANCE, 0.05);
+  const maxWidth = state.offX + state.usableW;
+  const maxHeight = state.offY + state.usableH;
+
+  const widthBuckets = new Map();
+
+  for (const entry of pool) {
+    if (entry.placed) continue;
+    const orientation = selectPreferredOrientationForState(entry, allowAutoRotate, state.usableW, state.usableH);
+    if (!orientation) continue;
+    const widthKey = normalizeColumnWidth(orientation.width, tolerance);
+    if (widthKey <= PACKING_EPSILON) continue;
+    if (!widthBuckets.has(widthKey)) {
+      widthBuckets.set(widthKey, []);
+    }
+    widthBuckets.get(widthKey).push({ entry, orientation });
+  }
+
+  if (!widthBuckets.size) return;
+
+  const widthKeys = Array.from(widthBuckets.keys()).sort((a, b) => b - a);
+  let columnX = state.offX;
+
+  while (widthKeys.length && !forceStopSolver) {
+    const remainingWidth = maxWidth - columnX;
+    if (remainingWidth <= PACKING_EPSILON) break;
+
+    let selectedIdx = -1;
+    for (let i = 0; i < widthKeys.length; i++) {
+      if (widthKeys[i] <= remainingWidth + tolerance) {
+        selectedIdx = i;
+        break;
+      }
+    }
+
+    if (selectedIdx === -1) {
+      break;
+    }
+
+    const widthKey = widthKeys[selectedIdx];
+    const bucket = widthBuckets.get(widthKey);
+    if (!bucket || !bucket.length) {
+      widthBuckets.delete(widthKey);
+      widthKeys.splice(selectedIdx, 1);
+      continue;
+    }
+
+    bucket.sort((a, b) => b.orientation.height - a.orientation.height || (b.entry.area - a.entry.area));
+
+    let yCursor = state.offY;
+    let placedInColumn = false;
+
+    for (let i = 0; i < bucket.length;) {
+      if (forceStopSolver) break;
+      const candidate = bucket[i];
+      if (candidate.entry.placed) {
+        bucket.splice(i, 1);
+        continue;
+      }
+
+      const orientation = candidate.orientation;
+      const spacing = placedInColumn ? kerf : 0;
+      if (yCursor + spacing + orientation.height > maxHeight + PACKING_EPSILON) {
+        i++;
+        continue;
+      }
+
+      const placementY = yCursor + spacing;
+      recordPlacementLocal({ x: columnX }, placementY, candidate.entry, orientation, plateIdx, placements, placementsByPlate, bestOrder, metrics);
+      placedInColumn = true;
+      yCursor = placementY + orientation.height;
+      bucket.splice(i, 1);
+    }
+
+    if (!placedInColumn) {
+      widthBuckets.delete(widthKey);
+      widthKeys.splice(selectedIdx, 1);
+      continue;
+    }
+
+    columnX += widthKey + kerf;
+
+    if (!bucket.length) {
+      widthBuckets.delete(widthKey);
+      widthKeys.splice(selectedIdx, 1);
+    }
   }
 }
 
@@ -2133,6 +2199,9 @@ function solveWithGuillotineLocal(instances, pieces, options = {}) {
 
   const allowAutoRotate = !!options.allowAutoRotate;
   const kerf = Number.isFinite(options.kerf) ? options.kerf : 0;
+  const columnWidthTolerance = Number.isFinite(options.columnWidthTolerance)
+    ? Math.max(options.columnWidthTolerance, 0.05)
+    : DEFAULT_COLUMN_WIDTH_TOLERANCE;
 
   const states = instances.map(inst => createPlateStateLocal(inst, kerf));
   const pool = pieces.map(piece => ({
@@ -2158,46 +2227,18 @@ function solveWithGuillotineLocal(instances, pieces, options = {}) {
     const state = states[plateIdx];
     if (state.usableW <= PACKING_EPSILON || state.usableH <= PACKING_EPSILON) continue;
 
-    let xCursor = state.offX;
-    let strips = 0;
-
-    while (!forceStopSolver && hasUnplacedPiecesLocal(pool)) {
-      let remainingWidth = state.offX + state.usableW - xCursor;
-      if (strips > 0) {
-        remainingWidth -= kerf;
-        if (remainingWidth <= PACKING_EPSILON) break;
-      }
-
-      const starter = pickStripStarterLocal(state, pool, allowAutoRotate, remainingWidth);
-      if (!starter) break;
-
-      if (strips > 0) {
-        xCursor += kerf;
-      }
-
-      if (xCursor + starter.orientation.width > state.offX + state.usableW + PACKING_EPSILON) {
-        if (strips > 0) {
-          xCursor -= kerf;
-        }
-        break;
-      }
-
-      const strip = {
-        width: starter.orientation.width,
-        x: xCursor,
-        nextY: state.offY
-      };
-
-      const entry = pool[starter.index];
-      const firstY = strip.nextY;
-      recordPlacementLocal(strip, firstY, entry, starter.orientation, plateIdx, placements, placementsByPlate, bestOrder, metrics);
-      strip.nextY = firstY + starter.orientation.height;
-
-      fillStripWithPiecesLocal(state, strip, pool, allowAutoRotate, kerf, plateIdx, placements, placementsByPlate, bestOrder, metrics);
-
-      xCursor += strip.width;
-      strips += 1;
-    }
+    buildColumnPlan({
+      state,
+      pool,
+      plateIdx,
+      allowAutoRotate,
+      kerf,
+      columnWidthTolerance,
+      placements,
+      placementsByPlate,
+      bestOrder,
+      metrics
+    });
   }
 
   const leftovers = pool
@@ -2209,7 +2250,7 @@ function solveWithGuillotineLocal(instances, pieces, options = {}) {
       rawH: entry.rawH,
       color: entry.color,
       rot: entry.rot,
-      area: entry.rawW * entry.rawH,
+      area: entry.area,
       dimKey: entry.dimKey
     }));
 
@@ -4551,6 +4592,7 @@ async function renderWithAdvancedOptimizer() {
     
     // Calcular hash de los datos para detectar cambios
     const dataHash = JSON.stringify({
+      solverMode: 'column-only-v1',
       pieces: pieces.map(p => ({
         w: p.width,
         h: p.height,
