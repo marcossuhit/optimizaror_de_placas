@@ -2843,46 +2843,93 @@ function makeRow(index) {
     scheduleLayoutRecalc({ priority: 'normal' });
     persistState && persistState();
   };
+  const handleEdgeSelectChange = () => {
+    const syncLabelDataset = (select) => {
+      if (!select) return;
+      const active = select.selectedOptions?.[0];
+      if (active && active.value) {
+        const raw = (active.textContent || '').trim();
+        const [base] = raw.split('—');
+        select.dataset.label = (base || raw).trim();
+        select.dataset.value = active.value || '';
+      } else {
+        delete select.dataset.label;
+        delete select.dataset.value;
+      }
+    };
+    syncLabelDataset(wEdgeSelect);
+    syncLabelDataset(hEdgeSelect);
+    syncStoredEdgeNames();
+
+    const wChanged = wEdgeSelect.value && iWLevel.value === '0';
+    const wCleared = !wEdgeSelect.value && iWLevel.value !== '0';
+    const hChanged = hEdgeSelect.value && iHLevel.value === '0';
+    const hCleared = !hEdgeSelect.value && iHLevel.value !== '0';
+
+    if (wChanged) iWLevel.value = '1';
+    if (wCleared) iWLevel.value = '0';
+    if (hChanged) iHLevel.value = '1';
+    if (hCleared) iHLevel.value = '0';
+
+    // Forzar la sincronización y el recálculo, ya que este es un evento de cambio explícito.
+    syncEdgesFromTierInputs({ emitChange: true });
+  };
+
   const handleTierInputChange = (input) => {
     let parsed = parseInt(input.value.trim(), 10);
     if (!Number.isFinite(parsed)) parsed = 0;
     parsed = clamp(parsed, 0, 2);
     if (String(parsed) !== input.value) input.value = String(parsed);
-    
-    // Auto-seleccionar el valor del combo principal cuando el valor es mayor a 0
+
+    const isWidthInput = input === iWLevel;
+    const select = isWidthInput ? wEdgeSelect : hEdgeSelect;
+
+    // Si el usuario pone el contador a 0, deseleccionar el tipo de canto.
+    if (parsed === 0) {
+      if (select.value !== '') {
+        select.value = '';
+        // El 'change' event en el select disparará handleEdgeSelectChange.
+        select.dispatchEvent(new Event('change'));
+      } else {
+        // Si ya estaba vacío, solo sincronizar.
+        syncEdgesFromTierInputs({ emitChange: true });
+      }
+      return;
+    }
+
+    // Si el usuario pone el contador > 0 y no hay un tipo seleccionado, auto-seleccionar.
     if (parsed > 0) {
-      const isWidthInput = input === iWLevel;
-      const select = isWidthInput ? wEdgeSelect : hEdgeSelect;
-      
-      // Si no tiene selección o tiene "sin cubre canto", usar el combo principal o BLANCO
       const currentValue = (select?.value || '').trim();
       if (!currentValue || /^sin\s+cubre\s*canto/i.test(currentValue)) {
-        // Primero intentar usar el valor del combo principal
         const catalogValue = edgeCatalogSelect?.value || '';
+        let optionToSelect = null;
+
         if (catalogValue) {
-          // Buscar opción que coincida con el combo principal
-          const catalogOption = Array.from(select?.options || []).find(opt => 
-            opt.value === catalogValue
-          );
-          if (catalogOption) {
-            select.value = catalogOption.value;
-            handleEdgeSelectChange();
-          }
-        } else {
-          // Fallback: buscar opción que contenga "BLANCO"
-          const blancoOption = Array.from(select?.options || []).find(opt => 
-            opt.textContent.toUpperCase().includes('BLANCO')
-          );
-          if (blancoOption) {
-            select.value = blancoOption.value;
-            handleEdgeSelectChange();
-          }
+          optionToSelect = Array.from(select?.options || []).find(opt => opt.value === catalogValue);
+        }
+        
+        if (!optionToSelect) {
+          optionToSelect = Array.from(select?.options || []).find(opt => opt.textContent.toUpperCase().includes('BLANCO'));
+        }
+
+        // FIX: If still no option, grab the first available one that is not the placeholder.
+        if (!optionToSelect) {
+            optionToSelect = Array.from(select?.options || []).find(opt => opt.value !== '');
+        }
+
+        if (optionToSelect) {
+          select.value = optionToSelect.value;
+          // Disparamos el evento para que la lógica centralizada en handleEdgeSelectChange se ejecute.
+          select.dispatchEvent(new Event('change'));
+          return; // El handler del 'change' se encargará del resto.
         }
       }
     }
     
+    // Si no se disparó ninguna lógica con 'change', sincronizar manualmente.
     syncEdgesFromTierInputs({ emitChange: true });
   };
+
   tierInputs.forEach((input) => {
     input.addEventListener('input', () => handleTierInputChange(input));
   });
@@ -2908,27 +2955,6 @@ function makeRow(index) {
     row._edgeNames.vertical = deriveEdgeDisplayName(hEdgeSelect);
   };
 
-  const handleEdgeSelectChange = () => {
-    const syncLabelDataset = (select) => {
-      if (!select) return;
-      const active = select.selectedOptions?.[0];
-      if (active && active.value) {
-        const raw = (active.textContent || '').trim();
-        const [base] = raw.split('—');
-        select.dataset.label = (base || raw).trim();
-        select.dataset.value = active.value || '';
-      } else {
-        delete select.dataset.label;
-        delete select.dataset.value;
-      }
-    };
-    syncLabelDataset(wEdgeSelect);
-    syncLabelDataset(hEdgeSelect);
-    syncStoredEdgeNames();
-    updateEdgeColors();
-    scheduleLayoutRecalc({ priority: 'normal' });
-    if (typeof persistState === 'function') persistState();
-  };
 
   const updateEdgeColors = () => {
     // Obtener el texto completo de la opción seleccionada
@@ -3291,13 +3317,9 @@ function makeRow(index) {
       }
       updateEdgeColors();
     } else {
-      // Al bloquear, limpiar selección de bordes
-      for (const key of Object.keys(edges)) {
-        const el = edges[key];
-        el.dataset.selected = '0';
-        el.classList.remove('selected');
-        el.style.stroke = '#ef4444';
-      }
+      // Al bloquear, no se limpian los bordes para permitir la entrada incremental.
+      // La limpieza se maneja al borrar los valores de las dimensiones.
+      
       // Placeholder centrado dentro del área visible
       rw = innerW * 0.72;
       rh = innerH * 0.65;
@@ -3723,8 +3745,8 @@ initRemoteSynchronisation();
 refreshMaterialOptions();
 refreshEdgeCatalog();
 window.addEventListener('focus', () => {
-  refreshMaterialOptions();
-  refreshEdgeCatalog();
+  // refreshMaterialOptions();
+  // refreshEdgeCatalog();
 });
 window.addEventListener('storage', (event) => {
   if (event.key === STOCK_STORAGE_KEY) refreshMaterialOptions();
@@ -4034,6 +4056,8 @@ function cloneSvgForExport(svgEl) {
 
   clone.querySelectorAll('.piece-rot').forEach(label => {
     label.setAttribute('fill', '#111827');
+    label.setAttribute('font-family', 'Arial, sans-serif');
+    label.setAttribute('font-weight', 'bold');
   });
 
   clone.querySelectorAll('text').forEach(label => {
@@ -4596,14 +4620,7 @@ async function renderWithAdvancedOptimizer() {
       pieces: pieces.map(p => ({
         w: p.width,
         h: p.height,
-        id: p.id,
-        edges: Array.isArray(p.edges) ? p.edges : null,
-        widthEdge: p.widthEdge || '',
-        heightEdge: p.heightEdge || '',
-        widthEdgeLabel: p.widthEdgeLabel || '',
-        heightEdgeLabel: p.heightEdgeLabel || '',
-        widthTier: Number.isFinite(p.widthTier) ? p.widthTier : null,
-        heightTier: Number.isFinite(p.heightTier) ? p.heightTier : null
+        id: p.id
       })),
       plate: { w: plateWidth, h: plateHeight },
       options: { kerf, trimLeft, trimTop, trimRight, trimBottom, rot: options.allowRotation }
@@ -4612,10 +4629,11 @@ async function renderWithAdvancedOptimizer() {
     // Si los datos no han cambiado y ya tenemos una solución, reutilizarla
     if (lastOptimizationHash === dataHash && lastOptimizationResult) {
       console.log('✅ Reutilizando optimización anterior (sin cambios en datos)');
+      const newPiecesMap = new Map(pieces.map(p => [p.id, p]));
       const { optimizeCutLayout, generateReport } = await import('./advanced-optimizer.js');
       const report = generateReport(lastOptimizationResult);
       updateSummaryWithAdvancedReport(report);
-      renderAdvancedSolution(lastOptimizationResult, plateSpec);
+      renderAdvancedSolution(lastOptimizationResult, plateSpec, newPiecesMap);
       return;
     }
     
@@ -4678,7 +4696,7 @@ function gatherPiecesFromRows() {
 /**
  * Renderiza visualmente la solución del optimizador avanzado
  */
-function renderAdvancedSolution(optimizationResult, plateSpec) {
+function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null) {
   if (!sheetCanvasEl) return;
   
   // Activar flag para prevenir que renderSheetOverview sobrescriba
@@ -4687,7 +4705,11 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
   // IMPORTANTE: Limpiar completamente el canvas
   sheetCanvasEl.innerHTML = '';
   
-  const { plates, remaining } = optimizationResult;
+  let { plates, remaining } = optimizationResult;
+
+  if (piecesMap) {
+    remaining = remaining.map(p => (piecesMap.has(p.id) ? piecesMap.get(p.id) : p));
+  }
 
   currentDisplayedPlacementsByPlate = [];
   currentDisplayedPlateSpecs = [];
@@ -4828,6 +4850,9 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
 
     // Dibujar piezas
     placedPieces.forEach((p, idx) => {
+      const pieceData = (piecesMap && p.piece && piecesMap.has(p.piece.id)) ? piecesMap.get(p.piece.id) : p.piece;
+      if (!pieceData) return;
+
       const pxX = ox + p.x * scale;
       const pxY = oy + p.y * scale;
       const pxW = Math.max(1, p.width * scale);
@@ -4846,7 +4871,7 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
       outer.setAttribute('height', String(pxH));
       outer.setAttribute('rx', '3');
       outer.setAttribute('fill', '#ef444428');
-      outer.setAttribute('stroke', p.piece.color || '#ef4444');
+      outer.setAttribute('stroke', pieceData.color || '#ef4444');
       outer.setAttribute('stroke-width', '2');
       svg.appendChild(outer);
       
@@ -4858,7 +4883,7 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
       inner.setAttribute('width', String(Math.max(1, pxW - 4)));
       inner.setAttribute('height', String(Math.max(1, pxH - 4)));
       inner.setAttribute('rx', '2');
-      inner.setAttribute('fill', p.piece.color || '#ef4444');
+      inner.setAttribute('fill', pieceData.color || '#ef4444');
       inner.setAttribute('fill-opacity', '0.35');
       svg.appendChild(inner);
       
@@ -4899,10 +4924,12 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
       cutNumberLabel.setAttribute('stroke-width', '0.5');
       cutNumberLabel.textContent = String(cutNumber);
       svg.appendChild(cutNumberLabel);
+
+
       // Indicador de rotación
-      if (p.piece.rotated) {
+      if (pieceData.rotated) {
         const rotLabel = document.createElementNS(svgNS, 'text');
-        rotLabel.setAttribute('class', 'piece-label');
+        rotLabel.setAttribute('class', 'piece-label piece-rot');
         rotLabel.setAttribute('text-anchor', 'start');
         rotLabel.setAttribute('x', String(pxX + 8));
         rotLabel.setAttribute('y', String(pxY + 16));
@@ -4915,24 +4942,43 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
       
       // Dibujar indicadores de cubre cantos
       {
-        const edgeFlags = Array.isArray(p.piece.edges) ? p.piece.edges : [];
-        const widthTierCount = Number.isFinite(p.piece.widthTier) ? p.piece.widthTier : null;
-        const heightTierCount = Number.isFinite(p.piece.heightTier) ? p.piece.heightTier : null;
+        const edgeFlags = Array.isArray(pieceData.edges) ? pieceData.edges : [];
+        const widthTierCount = Number.isFinite(pieceData.widthTier) ? pieceData.widthTier : null;
+        const heightTierCount = Number.isFinite(pieceData.heightTier) ? pieceData.heightTier : null;
 
         const resolveFlag = (flag, fallback) => (typeof flag === 'boolean' ? flag : fallback);
-        const hasTopEdge = resolveFlag(edgeFlags[0], widthTierCount != null ? widthTierCount >= 1 : false);
-        const hasRightEdge = resolveFlag(edgeFlags[1], heightTierCount != null ? heightTierCount >= 1 : false);
-        const hasBottomEdge = resolveFlag(edgeFlags[2], widthTierCount != null ? widthTierCount >= 2 : false);
-        const hasLeftEdge = resolveFlag(edgeFlags[3], heightTierCount != null ? heightTierCount >= 2 : false);
 
-  const edgeLabelFontSize = Math.max(6, Math.min(pxW, pxH) * 0.08);
-  const lineLength = 0.6; // 60% de la longitud total
-  const lineOffset = 20; // Separación dentro del borde de la pieza
-  const widthEdgeName = (p.piece.widthEdgeLabel || p.piece.widthEdge || '').trim();
-  const heightEdgeName = (p.piece.heightEdgeLabel || p.piece.heightEdge || '').trim();
+        let hasTopEdge, hasRightEdge, hasBottomEdge, hasLeftEdge;
+        let topBottomEdgeName, leftRightEdgeName;
+
+        if (pieceData.rotated) {
+          // La pieza está rotada, los cantos se intercambian.
+          // El canto superior original ahora es el izquierdo, el derecho es el superior, etc.
+          hasTopEdge = resolveFlag(edgeFlags[1], heightTierCount != null ? heightTierCount >= 1 : false); // Original: Derecho
+          hasRightEdge = resolveFlag(edgeFlags[2], widthTierCount != null ? widthTierCount >= 2 : false); // Original: Inferior
+          hasBottomEdge = resolveFlag(edgeFlags[3], heightTierCount != null ? heightTierCount >= 2 : false); // Original: Izquierdo
+          hasLeftEdge = resolveFlag(edgeFlags[0], widthTierCount != null ? widthTierCount >= 1 : false); // Original: Superior
+
+          // Los nombres de los cantos también se intercambian
+          topBottomEdgeName = (pieceData.heightEdgeLabel || pieceData.heightEdge || '').trim();
+          leftRightEdgeName = (pieceData.widthEdgeLabel || pieceData.widthEdge || '').trim();
+        } else {
+          // La pieza no está rotada, se usa la lógica original
+          hasTopEdge = resolveFlag(edgeFlags[0], widthTierCount != null ? widthTierCount >= 1 : false);
+          hasRightEdge = resolveFlag(edgeFlags[1], heightTierCount != null ? heightTierCount >= 1 : false);
+          hasBottomEdge = resolveFlag(edgeFlags[2], widthTierCount != null ? widthTierCount >= 2 : false);
+          hasLeftEdge = resolveFlag(edgeFlags[3], heightTierCount != null ? heightTierCount >= 2 : false);
+
+          topBottomEdgeName = (pieceData.widthEdgeLabel || pieceData.widthEdge || '').trim();
+          leftRightEdgeName = (pieceData.heightEdgeLabel || pieceData.heightEdge || '').trim();
+        }
+
+        const edgeLabelFontSize = Math.max(6, Math.min(pxW, pxH) * 0.08);
+        const lineLength = 0.6; // 60% de la longitud total
+        const lineOffset = 20; // Separación dentro del borde de la pieza
 
         // Borde superior (horizontal)
-        if (hasTopEdge && widthEdgeName) {
+        if (hasTopEdge && topBottomEdgeName) {
           const lineCenterX = pxX + pxW / 2;
           const lineStartX = lineCenterX - (pxW * lineLength) / 2;
           const lineEndX = lineCenterX + (pxW * lineLength) / 2;
@@ -4956,12 +5002,12 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
           edgeLabel.setAttribute('font-size', String(edgeLabelFontSize));
           edgeLabel.setAttribute('fill', '#fff');
           edgeLabel.setAttribute('font-weight', 'bold');
-          edgeLabel.textContent = widthEdgeName;
+          edgeLabel.textContent = topBottomEdgeName;
           svg.appendChild(edgeLabel);
         }
 
         // Borde derecho (vertical)
-        if (hasRightEdge && heightEdgeName) {
+        if (hasRightEdge && leftRightEdgeName) {
           const lineCenterY = pxY + pxH / 2;
           const lineStartY = lineCenterY - (pxH * lineLength) / 2;
           const lineEndY = lineCenterY + (pxH * lineLength) / 2;
@@ -4986,12 +5032,12 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
           edgeLabel.setAttribute('fill', '#fff');
           edgeLabel.setAttribute('font-weight', 'bold');
           edgeLabel.setAttribute('transform', `rotate(-90 ${lineX - 2} ${lineCenterY})`);
-          edgeLabel.textContent = heightEdgeName;
+          edgeLabel.textContent = leftRightEdgeName;
           svg.appendChild(edgeLabel);
         }
 
         // Borde inferior (horizontal)
-        if (hasBottomEdge && widthEdgeName) {
+        if (hasBottomEdge && topBottomEdgeName) {
           const lineCenterX = pxX + pxW / 2;
           const lineStartX = lineCenterX - (pxW * lineLength) / 2;
           const lineEndX = lineCenterX + (pxW * lineLength) / 2;
@@ -5016,12 +5062,12 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
           edgeLabel.setAttribute('font-size', String(edgeLabelFontSize));
           edgeLabel.setAttribute('fill', '#fff');
           edgeLabel.setAttribute('font-weight', 'bold');
-          edgeLabel.textContent = widthEdgeName;
+          edgeLabel.textContent = topBottomEdgeName;
           svg.appendChild(edgeLabel);
         }
 
         // Borde izquierdo (vertical)
-        if (hasLeftEdge && heightEdgeName) {
+        if (hasLeftEdge && leftRightEdgeName) {
           const lineCenterY = pxY + pxH / 2;
           const lineStartY = lineCenterY - (pxH * lineLength) / 2;
           const lineEndY = lineCenterY + (pxH * lineLength) / 2;
@@ -5048,7 +5094,7 @@ function renderAdvancedSolution(optimizationResult, plateSpec) {
           edgeLabel.setAttribute('fill', '#fff');
           edgeLabel.setAttribute('font-weight', 'bold');
           edgeLabel.setAttribute('transform', `rotate(-90 ${labelX} ${lineCenterY})`);
-          edgeLabel.textContent = heightEdgeName;
+          edgeLabel.textContent = leftRightEdgeName;
           svg.appendChild(edgeLabel);
         }
       }

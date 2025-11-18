@@ -449,13 +449,12 @@ function fillStripWithShelfPacking(state, strip, pool, allowAutoRotate, kerf, pl
         h: bestPiece.orientation.height,
         usedW: bestPiece.orientation.width,
         usedH: bestPiece.orientation.height,
-        rawW: bestPiece.orientation.width,
-        rawH: bestPiece.orientation.height,
-        rot: bestPiece.orientation.rotated ? !bestPiece.entry.rot : !!bestPiece.entry.rot,
-        color: bestPiece.entry.color,
-        rowIdx: bestPiece.entry.rowIdx
-      };
-      
+                  rawW: bestPiece.orientation.width,
+                  rawH: bestPiece.orientation.height,
+                  isRotated: bestPiece.orientation.rotated, // Corregido de 'rot' a 'isRotated'
+                  color: bestPiece.entry.color,
+                  rowIdx: bestPiece.entry.rowIdx
+                };      
       placements.push(placement);
       placementsByPlate[plateIdx].push(placement);
       bestOrder.push(bestPiece.entry.id);
@@ -688,7 +687,7 @@ function executePackingAlgorithm(states, pool, allowAutoRotate, kerf, placements
         usedH: starter.orientation.height,
         rawW: starter.orientation.width,
         rawH: starter.orientation.height,
-        rot: starter.orientation.rotated ? !entry.rot : !!entry.rot,
+        isRotated: starter.orientation.rotated, // Corregido de 'rot' a 'isRotated'
         color: entry.color,
         rowIdx: entry.rowIdx
       };
