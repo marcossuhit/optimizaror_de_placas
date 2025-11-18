@@ -315,17 +315,18 @@ function firstFitDecreasing(pieces, plateSpec, options = {}) {
   for (const piece of sorted) {
     let placed = false;
 
-    // Intentar con orientación original
+    // Intentar con orientación de entrada
     const orientations = [
-      { ...piece, rotated: false }
+      { ...piece } // Usar la pieza tal como viene
     ];
 
     if (allowRotation && Math.abs(piece.width - piece.height) > EPSILON) {
+      // Añadir la orientación opuesta
       orientations.push({
         ...piece,
         width: piece.height,
         height: piece.width,
-        rotated: true
+        rotated: !piece.rotated
       });
     }
 
@@ -391,16 +392,18 @@ function bestFitDecreasing(pieces, plateSpec, options = {}) {
     let bestOrientation = null;
     let bestWaste = Infinity;
 
+    // Intentar con orientación de entrada
     const orientations = [
-      { ...piece, rotated: false }
+      { ...piece } // Usar la pieza tal como viene
     ];
 
     if (allowRotation && Math.abs(piece.width - piece.height) > EPSILON) {
+      // Añadir la orientación opuesta
       orientations.push({
         ...piece,
         width: piece.height,
         height: piece.width,
-        rotated: true
+        rotated: !piece.rotated
       });
     }
 
