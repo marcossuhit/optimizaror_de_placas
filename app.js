@@ -4830,24 +4830,6 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
       svg.appendChild(trimRect);
     }
     
-    // Crear mapa de agrupación por dimensiones para numeración consistente
-    const dimensionGroups = new Map();
-    let cutTypeCounter = 1;
-    
-    // Agrupar piezas por dimensiones (ancho x alto)
-    placedPieces.forEach((p) => {
-      const key = `${p.width.toFixed(0)}x${p.height.toFixed(0)}`;
-      if (!dimensionGroups.has(key)) {
-        dimensionGroups.set(key, {
-          cutNumber: cutTypeCounter++,
-          pieces: [],
-          width: p.width,
-          height: p.height
-        });
-      }
-      dimensionGroups.get(key).pieces.push(p);
-    });
-
     // Dibujar piezas
     placedPieces.forEach((p, idx) => {
       const pieceData = (piecesMap && p.piece && piecesMap.has(p.piece.id)) ? piecesMap.get(p.piece.id) : p.piece;
@@ -4877,10 +4859,6 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
       const pxY = oy + p.y * scale;
       const pxW = Math.max(1, p.width * scale);
       const pxH = Math.max(1, p.height * scale);
-      
-      // Obtener número de corte basado en dimensiones
-      const dimensionKey = `${p.width.toFixed(0)}x${p.height.toFixed(0)}`;
-      const cutNumber = dimensionGroups.get(dimensionKey).cutNumber;
       
       // Rectángulo exterior (borde)
       const outer = document.createElementNS(svgNS, 'rect');
@@ -4920,6 +4898,26 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
       widthLabel.textContent = `${p.width.toFixed(0)}`;
       svg.appendChild(widthLabel);
       // Label de alto (ROTADO VERTICALMENTE)
+
+      // Número central basado en la fila original
+      const rowIndexValue = pieceData.rowIndex ?? pieceData.rowIdx ?? pieceData.row;
+      const rowNumberParsed = Number.parseInt(rowIndexValue, 10);
+      if (Number.isFinite(rowNumberParsed)) {
+        const rowNumber = rowNumberParsed + 1;
+        const centerFontSize = Math.max(8, Math.min(pxW, pxH) * 0.2);
+        const rowLabel = document.createElementNS(svgNS, 'text');
+        rowLabel.setAttribute('class', 'piece-cut-number');
+        rowLabel.setAttribute('text-anchor', 'middle');
+        rowLabel.setAttribute('x', String(pxX + pxW / 2));
+        rowLabel.setAttribute('y', String(pxY + pxH / 2 + centerFontSize / 3));
+        rowLabel.setAttribute('font-size', String(centerFontSize));
+        rowLabel.setAttribute('fill', '#fff');
+        rowLabel.setAttribute('font-weight', 'bold');
+        rowLabel.setAttribute('stroke', '#000');
+        rowLabel.setAttribute('stroke-width', '0.5');
+        rowLabel.textContent = String(rowNumber);
+        svg.appendChild(rowLabel);
+      }
       const heightLabel = document.createElementNS(svgNS, 'text');
       heightLabel.setAttribute('class', 'piece-label');
       heightLabel.setAttribute('text-anchor', 'middle');
@@ -4930,22 +4928,6 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
       heightLabel.setAttribute('transform', `rotate(-90 ${pxX + pxW - 8} ${pxY + pxH / 2})`);
       heightLabel.textContent = `${p.height.toFixed(0)}`;
       svg.appendChild(heightLabel);
-      // Número de corte en el centro
-      const cutNumberFontSize = Math.max(8, Math.min(pxW, pxH) * 0.15);
-      const cutNumberLabel = document.createElementNS(svgNS, 'text');
-      cutNumberLabel.setAttribute('class', 'piece-cut-number');
-      cutNumberLabel.setAttribute('text-anchor', 'middle');
-      cutNumberLabel.setAttribute('x', String(pxX + pxW / 2));
-      cutNumberLabel.setAttribute('y', String(pxY + pxH / 2 + cutNumberFontSize / 3));
-      cutNumberLabel.setAttribute('font-size', String(cutNumberFontSize));
-      cutNumberLabel.setAttribute('fill', '#fff');
-      cutNumberLabel.setAttribute('font-weight', 'bold');
-      cutNumberLabel.setAttribute('stroke', '#000');
-      cutNumberLabel.setAttribute('stroke-width', '0.5');
-      cutNumberLabel.textContent = String(cutNumber);
-      svg.appendChild(cutNumberLabel);
-
-
       // Indicador de rotación
       if (isRotated) {
         const rotLabel = document.createElementNS(svgNS, 'text');
