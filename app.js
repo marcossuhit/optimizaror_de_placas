@@ -4853,6 +4853,26 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
       const pieceData = (piecesMap && p.piece && piecesMap.has(p.piece.id)) ? piecesMap.get(p.piece.id) : p.piece;
       if (!pieceData) return;
 
+      const normalizedPlacement = normalizedPlacementsForPlate[idx];
+      const explicitRotation = Number.parseFloat(
+        p.rotation ??
+        normalizedPlacement?.rotation ??
+        (p.piece ? p.piece.rotation : undefined) ??
+        pieceData.rotation
+      );
+      let hasQuarterTurn = false;
+      if (Number.isFinite(explicitRotation)) {
+        const rotationMod = Math.abs(explicitRotation % 180);
+        hasQuarterTurn = Math.abs(rotationMod - 90) < 0.0001;
+      }
+      const isRotated = Boolean(
+        normalizedPlacement?.rotated ||
+        p.rotated ||
+        (p.piece && p.piece.rotated) ||
+        pieceData.rotated ||
+        hasQuarterTurn
+      );
+
       const pxX = ox + p.x * scale;
       const pxY = oy + p.y * scale;
       const pxW = Math.max(1, p.width * scale);
@@ -4927,7 +4947,7 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
 
 
       // Indicador de rotación
-      if (pieceData.rotated) {
+      if (isRotated) {
         const rotLabel = document.createElementNS(svgNS, 'text');
         rotLabel.setAttribute('class', 'piece-label piece-rot');
         rotLabel.setAttribute('text-anchor', 'start');
@@ -4951,7 +4971,7 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
         let hasTopEdge, hasRightEdge, hasBottomEdge, hasLeftEdge;
         let topBottomEdgeName, leftRightEdgeName;
 
-        if (pieceData.rotated) {
+        if (isRotated) {
           // La pieza está rotada, los cantos se intercambian.
           // El canto superior original ahora es el izquierdo, el derecho es el superior, etc.
           hasTopEdge = resolveFlag(edgeFlags[1], heightTierCount != null ? heightTierCount >= 1 : false); // Original: Derecho
