@@ -2930,6 +2930,61 @@ function makeRow(index) {
     syncEdgesFromTierInputs({ emitChange: true });
   };
 
+  const swapEdgebandAssignments = () => {
+    const widthTierValue = iWLevel.value;
+    iWLevel.value = iHLevel.value;
+    iHLevel.value = widthTierValue;
+
+    const captureState = (select) => {
+      const activeOption = select?.selectedOptions?.[0] || null;
+      return {
+        value: select ? select.value || '' : '',
+        label: select?.dataset?.label ? select.dataset.label.trim() : '',
+        text: activeOption ? (activeOption.textContent || '').trim() : ''
+      };
+    };
+
+    const applyState = (select, state) => {
+      if (!select) return;
+      const nextValue = state.value || '';
+      const labelText = state.label || state.text || nextValue;
+      if (nextValue) {
+        const options = Array.from(select.options || []);
+        let option = options.find((opt) => opt.value === nextValue);
+        if (!option) {
+          option = document.createElement('option');
+          option.value = nextValue;
+          option.textContent = labelText || `${nextValue} (no listado)`;
+          option.dataset.missing = '1';
+          select.appendChild(option);
+        }
+        select.value = nextValue;
+      } else {
+        select.value = '';
+      }
+
+      if (labelText) {
+        select.dataset.label = labelText;
+      } else {
+        delete select.dataset.label;
+      }
+
+      if (nextValue) {
+        select.dataset.value = nextValue;
+      } else {
+        delete select.dataset.value;
+      }
+    };
+
+    const widthState = captureState(wEdgeSelect);
+    const heightState = captureState(hEdgeSelect);
+
+    applyState(wEdgeSelect, heightState);
+    applyState(hEdgeSelect, widthState);
+
+    handleEdgeSelectChange();
+  };
+
   tierInputs.forEach((input) => {
     input.addEventListener('input', () => handleTierInputChange(input));
   });
@@ -3421,7 +3476,11 @@ function makeRow(index) {
     maybeAutoAppendRow(); 
   });
   iRot.addEventListener('change', () => {
-    row._manualRotWanted = iRot.checked;
+    const nextChecked = !!iRot.checked;
+    if (nextChecked !== row._manualRotWanted) {
+      swapEdgebandAssignments();
+    }
+    row._manualRotWanted = nextChecked;
     updatePreview();
     scheduleLayoutRecalc({ priority: 'normal' });
     persistState && persistState();
