@@ -473,11 +473,49 @@ function bestFitDecreasing(pieces, plateSpec, options = {}) {
 /**
  * Evalúa la calidad de una solución
  */
-function evaluateSolution(plates) {
+function evaluateSolution(plates, options = {}) {
+  const rotationPenalty = Number.isFinite(options.rotationPenalty)
+    ? Math.max(0, options.rotationPenalty)
+    : 0;
+  const allowRotation = options.allowRotation !== false;
+  const rotationMixPenalty = Number.isFinite(options.rotationMixPenalty)
+    ? Math.max(0, options.rotationMixPenalty)
+    : 0;
+
   const totalArea = plates.reduce((sum, p) => sum + p.totalArea, 0);
   const usedArea = plates.reduce((sum, p) => sum + p.usedArea, 0);
   const wasteArea = totalArea - usedArea;
   const utilization = totalArea > 0 ? (usedArea / totalArea) * 100 : 0;
+
+  let rotatedCount = 0;
+  let mixedRotationRows = 0;
+  if (allowRotation && (rotationPenalty > 0 || rotationMixPenalty > 0)) {
+    const rotationCounting = rotationMixPenalty > 0 ? new Map() : null;
+    rotatedCount = plates.reduce((sum, plate) => {
+      return sum + plate.placedPieces.reduce((inner, entry) => {
+        const rotated = entry?.piece?.rotated ? 1 : 0;
+        if (rotationCounting) {
+          const rowIdx = entry?.piece?.rowIndex ?? entry?.piece?.rowIdx ?? entry?.piece?.row;
+          if (rowIdx != null) {
+            const key = String(rowIdx);
+            const state = rotationCounting.get(key) || { rotated: 0, total: 0 };
+            state.rotated += rotated;
+            state.total += 1;
+            rotationCounting.set(key, state);
+          }
+        }
+        return inner + rotated;
+      }, 0);
+    }, 0);
+
+    if (rotationCounting && rotationCounting.size > 0) {
+      rotationCounting.forEach((state) => {
+        if (state.total > 0 && state.rotated > 0 && state.rotated < state.total) {
+          mixedRotationRows += 1;
+        }
+      });
+    }
+  }
 
   return {
     plateCount: plates.length,
@@ -485,7 +523,14 @@ function evaluateSolution(plates) {
     usedArea,
     wasteArea,
     utilization,
-    score: usedArea - (plates.length * 10000) // Penalizar número de placas
+    rotationPenaltyApplied: rotatedCount * rotationPenalty,
+    rotationMixPenaltyApplied: mixedRotationRows * rotationMixPenalty,
+    rotatedCount,
+    mixedRotationRows,
+    score: usedArea
+      - (plates.length * 10000)
+      - (rotatedCount * rotationPenalty)
+      - (mixedRotationRows * rotationMixPenalty) // Penalizar placas, rotaciones y mezclas por fila
   };
 }
 
@@ -508,7 +553,7 @@ function simulatedAnnealing(pieces, plateSpec, options = {}, iterations = 100) {
   for (const strategy of strategies) {
     const sorted = sortPieces(pieces, strategy);
     const solution = firstFitDecreasing(sorted, plateSpec, options);
-    const evaluation = evaluateSolution(solution.plates);
+    const evaluation = evaluateSolution(solution.plates, options);
 
     if (!bestInitialSolution || evaluation.score > bestInitialEval.score) {
       bestInitialSolution = solution;
@@ -563,7 +608,7 @@ function simulatedAnnealing(pieces, plateSpec, options = {}, iterations = 100) {
 
     // Generar nueva solución
     const newSolution = firstFitDecreasing(shuffled, plateSpec, options);
-    const newEval = evaluateSolution(newSolution.plates);
+    const newEval = evaluateSolution(newSolution.plates, options);
 
     // Decidir si aceptar la nueva solución
     const delta = newEval.score - currentEval.score;
@@ -618,7 +663,7 @@ export function optimizeCutLayout(pieces, plateSpec, options = {}) {
       return {
         plates: result.plates,
         remaining: result.remaining,
-        evaluation: evaluateSolution(result.plates)
+        evaluation: evaluateSolution(result.plates, options)
       };
 
     case 'bfd':
@@ -626,7 +671,7 @@ export function optimizeCutLayout(pieces, plateSpec, options = {}) {
       return {
         plates: result.plates,
         remaining: result.remaining,
-        evaluation: evaluateSolution(result.plates)
+        evaluation: evaluateSolution(result.plates, options)
       };
 
     case 'simulated-annealing':

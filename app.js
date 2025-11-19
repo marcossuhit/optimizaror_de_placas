@@ -4611,7 +4611,9 @@ async function renderWithAdvancedOptimizer() {
       trimTop: trimTop,
       trimRight: trimRight,
       trimBottom: trimBottom,
-      allowRotation: autoRotateToggle ? autoRotateToggle.checked : true
+      allowRotation: autoRotateToggle ? autoRotateToggle.checked : true,
+      rotationPenalty: 500,
+      rotationMixPenalty: 7500
     };
     
     // Calcular hash de los datos para detectar cambios
@@ -4623,7 +4625,16 @@ async function renderWithAdvancedOptimizer() {
         id: p.id
       })),
       plate: { w: plateWidth, h: plateHeight },
-      options: { kerf, trimLeft, trimTop, trimRight, trimBottom, rot: options.allowRotation }
+      options: {
+        kerf,
+        trimLeft,
+        trimTop,
+        trimRight,
+        trimBottom,
+        rot: options.allowRotation,
+        rotationPenalty: options.rotationPenalty,
+        rotationMixPenalty: options.rotationMixPenalty
+      }
     });
     
     // Si los datos no han cambiado y ya tenemos una solución, reutilizarla
