@@ -3744,8 +3744,8 @@ function ensureDefaultRows() {
   }
 }
 
-// Asegurar que la rotación automática esté habilitada por defecto
-if (autoRotateToggle) autoRotateToggle.checked = true;
+// Asegurar que la rotación automática esté deshabilitada por defecto
+if (autoRotateToggle) autoRotateToggle.checked = false;
 
 // Actualizar todas las filas cuando cambian las placas
 function refreshAllPreviews() {
@@ -4328,7 +4328,7 @@ function loadState(state) {
     pendingKerfValue = String(state.kerfMm);
     if (kerfInput) kerfInput.value = pendingKerfValue;
   }
-  if (autoRotateToggle) autoRotateToggle.checked = state.autoRotate !== false;
+  if (autoRotateToggle) autoRotateToggle.checked = state.autoRotate === true;
   if (plateMaterialSelect) {
     if (typeof state.material === 'string' && state.material.trim()) {
       const materialValue = state.material.trim();
@@ -4489,7 +4489,7 @@ function loadState(state) {
       })),
       pieces: collectPiecesFromState(state),
       kerf: state.kerfMm || 0,
-      allowAutoRotate: state.autoRotate !== false
+      allowAutoRotate: state.autoRotate === true
     };
     
     console.log('🔍 DEBUG: Usando placas actuales para cache key:', {
@@ -4850,7 +4850,7 @@ async function renderWithAdvancedOptimizer() {
       trimTop: trimTop,
       trimRight: trimRight,
       trimBottom: trimBottom,
-      allowRotation: autoRotateToggle ? autoRotateToggle.checked : true,
+      allowRotation: autoRotateToggle ? autoRotateToggle.checked : false,
       rotationPenalty: 500,
       rotationMixPenalty: 7500
     };
@@ -4969,7 +4969,7 @@ async function renderWithAdvancedOptimizerBands() {
       trimTop,
       trimRight,
       trimBottom,
-      allowRotation: autoRotateToggle ? autoRotateToggle.checked : true,
+      allowRotation: autoRotateToggle ? autoRotateToggle.checked : false,
       rotationPenalty: 500,
       rotationMixPenalty: 7500,
       orientationPreference: 'horizontal-bands'
@@ -5088,7 +5088,7 @@ async function renderCombinedAdvancedLayout() {
       algorithm: typeof baseOptionsSource.algorithm === 'string' ? baseOptionsSource.algorithm : 'simulated-annealing',
       iterations: Number.isFinite(Number(baseOptionsSource.iterations)) ? Number(baseOptionsSource.iterations) : 500,
       kerf: Number.isFinite(Number(baseOptionsSource.kerf)) ? Number(baseOptionsSource.kerf) : getKerfMm(),
-      allowRotation: baseOptionsSource.allowRotation !== undefined ? baseOptionsSource.allowRotation : (autoRotateToggle ? autoRotateToggle.checked : true),
+      allowRotation: baseOptionsSource.allowRotation !== undefined ? baseOptionsSource.allowRotation : (autoRotateToggle ? autoRotateToggle.checked : false),
       rotationPenalty: Number.isFinite(Number(baseOptionsSource.rotationPenalty)) ? Number(baseOptionsSource.rotationPenalty) : 500,
       rotationMixPenalty: Number.isFinite(Number(baseOptionsSource.rotationMixPenalty)) ? Number(baseOptionsSource.rotationMixPenalty) : 7500
     };
@@ -6163,7 +6163,7 @@ async function computeReuseComparisonDetails() {
   const trimRight = firstPlate.trim?.right ? trimMm : 0;
   const trimBottom = firstPlate.trim?.bottom ? trimMm : 0;
   const kerf = getKerfMm();
-  const allowRotation = autoRotateToggle ? autoRotateToggle.checked : true;
+  const allowRotation = autoRotateToggle ? autoRotateToggle.checked : false;
 
   const hashPayload = {
     pieces: pieces.map(p => ({ id: p.id, w: p.width, h: p.height })),
