@@ -80,6 +80,8 @@ let showingAdvancedOptimization = false;
 // Cache para evitar optimizaciones innecesarias
 let lastOptimizationHash = null;
 let lastOptimizationResult = null;
+let lastBandOptimizationHash = null;
+let lastBandOptimizationResult = null;
 
 const rowsEl = document.getElementById('rows');
 const addRowBtn = document.getElementById('addRowBtn');
@@ -122,6 +124,7 @@ const summaryUtilEl = document.getElementById('summaryUtil');
 const summaryReqEl = document.getElementById('summaryReq');
 const summaryPlacedEl = document.getElementById('summaryPlaced');
 const summaryLeftEl = document.getElementById('summaryLeft');
+const layoutRecommendationEl = document.getElementById('layoutRecommendation');
 const recalcLayoutBtn = document.getElementById('recalcLayoutBtn');
 const userSessionEl = document.getElementById('userSession');
 const userGreetingEl = document.getElementById('userGreeting');
@@ -139,6 +142,16 @@ const DEFAULT_PLATE_WIDTH_ADMIN = 2750;
 const DEFAULT_PLATE_HEIGHT_ADMIN = 1830;
 const DEFAULT_PLATE_WIDTH_USER = 2740;
 const DEFAULT_PLATE_HEIGHT_USER = 1820;
+const REUSE_EPS = 1e-4;
+
+function getSelectedLayoutStrategy() {
+  const el = document.getElementById('layoutStrategy');
+  const value = (el && el.value) ? el.value.toLowerCase() : '';
+  if (value === 'horizontal' || value === 'combined') {
+    return value;
+  }
+  return 'vertical';
+}
 
 function getDefaultPlateWidth() {
   return isBackofficeAllowed ? DEFAULT_PLATE_WIDTH_ADMIN : DEFAULT_PLATE_WIDTH_USER;
@@ -189,6 +202,11 @@ let solverCache = new Map();
 let cacheVersion = 0;
 let lastSuccessfulSolution = null; // Cache de emergencia
 let forceStopSolver = false;
+let reuseComparisonHash = null;
+let reuseComparisonResult = null;
+let reuseEvaluationInProgress = false;
+let reuseComparisonPromise = null;
+let reuseComparisonDetails = null;
 
 // Estado CNC derivado del plano actualmente mostrado
 let currentDisplayedPlacementsByPlate = [];
@@ -547,8 +565,8 @@ async function performLayoutRecalc() {
     refreshAllPreviews();
     recalcEdgebanding();
     
-    // SIEMPRE usar el optimizador avanzado
-    await renderWithAdvancedOptimizer();
+    // Ejecutar optimizador avanzado según la estrategia seleccionada
+    await renderAdvancedLayoutForCurrentStrategy();
   } catch (error) {
     console.error('Error en performLayoutRecalc:', error);
   } finally {
@@ -615,6 +633,11 @@ function invalidateSolverCache() {
     solverCache.clear();
     clearPersistentCache();
   }
+  reuseComparisonHash = null;
+  reuseComparisonResult = null;
+  reuseEvaluationInProgress = false;
+  reuseComparisonPromise = null;
+  reuseComparisonDetails = null;
 }
 
 function savePersistentCache(key, result) {
@@ -887,6 +910,15 @@ function resetSummaryUI() {
   if (summaryListEl) summaryListEl.innerHTML = '';
   if (summaryPlatesValueEl) summaryPlatesValueEl.innerHTML = '';
   if (summaryGrandTotalEl) summaryGrandTotalEl.innerHTML = '';
+  if (layoutRecommendationEl) {
+    layoutRecommendationEl.style.display = 'none';
+    layoutRecommendationEl.textContent = '';
+  }
+  reuseComparisonHash = null;
+  reuseComparisonResult = null;
+  reuseEvaluationInProgress = false;
+  reuseComparisonPromise = null;
+  reuseComparisonDetails = null;
   
   // Resetear flag de optimización avanzada y cache
   showingAdvancedOptimization = false;
@@ -2067,7 +2099,7 @@ function normalizeColumnWidth(width, tolerance) {
   return Number(normalized.toFixed(3));
 }
 
-function selectPreferredOrientationForState(entry, allowAutoRotate, maxWidth, maxHeight) {
+function selectPreferredOrientationForState(entry, allowAutoRotate, maxWidth, maxHeight, preference = 'width') {
   const orientations = getOrientationChoicesLocal(entry, allowAutoRotate);
   let best = null;
 
@@ -2077,15 +2109,18 @@ function selectPreferredOrientationForState(entry, allowAutoRotate, maxWidth, ma
 
     const widthScore = orientation.width;
     const heightScore = orientation.height;
+    const preferHeight = preference === 'height';
+    const primaryScore = preferHeight ? heightScore : widthScore;
+    const secondaryScore = preferHeight ? widthScore : heightScore;
 
     if (!best ||
-        widthScore < best.widthScore - PACKING_EPSILON ||
-        (Math.abs(widthScore - best.widthScore) <= PACKING_EPSILON && heightScore > best.heightScore + PACKING_EPSILON) ||
-        (Math.abs(widthScore - best.widthScore) <= PACKING_EPSILON && Math.abs(heightScore - best.heightScore) <= PACKING_EPSILON && orientation.rotated && !best.orientation.rotated)) {
+        primaryScore < best.primaryScore - PACKING_EPSILON ||
+        (Math.abs(primaryScore - best.primaryScore) <= PACKING_EPSILON && secondaryScore > best.secondaryScore + PACKING_EPSILON) ||
+        (Math.abs(primaryScore - best.primaryScore) <= PACKING_EPSILON && Math.abs(secondaryScore - best.secondaryScore) <= PACKING_EPSILON && orientation.rotated && !best.orientation.rotated)) {
       best = {
         orientation,
-        widthScore,
-        heightScore
+        primaryScore,
+        secondaryScore
       };
     }
   }
@@ -2105,6 +2140,7 @@ function buildColumnPlan({
   bestOrder,
   metrics
 }) {
+  console.log('🧭 buildColumnPlan (vertical layout) → plate', plateIdx);
   const tolerance = Math.max(columnWidthTolerance || DEFAULT_COLUMN_WIDTH_TOLERANCE, 0.05);
   const maxWidth = state.offX + state.usableW;
   const maxHeight = state.offY + state.usableH;
@@ -2113,7 +2149,7 @@ function buildColumnPlan({
 
   for (const entry of pool) {
     if (entry.placed) continue;
-    const orientation = selectPreferredOrientationForState(entry, allowAutoRotate, state.usableW, state.usableH);
+    const orientation = selectPreferredOrientationForState(entry, allowAutoRotate, state.usableW, state.usableH, 'width');
     if (!orientation) continue;
     const widthKey = normalizeColumnWidth(orientation.width, tolerance);
     if (widthKey <= PACKING_EPSILON) continue;
@@ -2194,6 +2230,119 @@ function buildColumnPlan({
   }
 }
 
+function buildColumnPlanVertical({
+  state,
+  pool,
+  plateIdx,
+  allowAutoRotate,
+  kerf,
+  columnWidthTolerance, // Using this as height tolerance
+  placements,
+  placementsByPlate,
+  bestOrder,
+  metrics
+}) {
+  console.log('🧭 buildColumnPlanVertical (horizontal layout) → plate', plateIdx);
+  const tolerance = Math.max(columnWidthTolerance || DEFAULT_COLUMN_WIDTH_TOLERANCE, 0.05);
+  const maxWidth = state.offX + state.usableW;
+  const maxHeight = state.offY + state.usableH;
+
+  // Helper to normalize height, similar to normalizeColumnWidth
+  const normalizeStripHeight = (height, tolerance) => {
+    if (!Number.isFinite(height) || height <= 0) {
+      return 0;
+    }
+    const step = Math.max(tolerance || DEFAULT_COLUMN_WIDTH_TOLERANCE, 0.05);
+    const normalized = Math.round(height / step) * step;
+    return Number(normalized.toFixed(3));
+  };
+
+  const heightBuckets = new Map();
+
+  for (const entry of pool) {
+    if (entry.placed) continue;
+    const orientation = selectPreferredOrientationForState(entry, allowAutoRotate, state.usableW, state.usableH, 'height');
+    if (!orientation) continue;
+    const heightKey = normalizeStripHeight(orientation.height, tolerance);
+    if (heightKey <= PACKING_EPSILON) continue;
+    if (!heightBuckets.has(heightKey)) {
+      heightBuckets.set(heightKey, []);
+    }
+    heightBuckets.get(heightKey).push({ entry, orientation });
+  }
+
+  if (!heightBuckets.size) return;
+
+  const heightKeys = Array.from(heightBuckets.keys()).sort((a, b) => b - a); // Tallest strips first
+  let stripY = state.offY;
+
+  while (heightKeys.length && !forceStopSolver) {
+    const remainingHeight = maxHeight - stripY;
+    if (remainingHeight <= PACKING_EPSILON) break;
+
+    let selectedIdx = -1;
+    for (let i = 0; i < heightKeys.length; i++) {
+      if (heightKeys[i] <= remainingHeight + tolerance) {
+        selectedIdx = i;
+        break;
+      }
+    }
+
+    if (selectedIdx === -1) {
+      break;
+    }
+
+    const heightKey = heightKeys[selectedIdx];
+    const bucket = heightBuckets.get(heightKey);
+    if (!bucket || !bucket.length) {
+      heightBuckets.delete(heightKey);
+      heightKeys.splice(selectedIdx, 1);
+      continue;
+    }
+
+    // Sort pieces in the strip by width (descending)
+    bucket.sort((a, b) => b.orientation.width - a.orientation.width || (b.entry.area - a.entry.area));
+
+    let xCursor = state.offX;
+    let placedInStrip = false;
+
+    for (let i = 0; i < bucket.length;) {
+      if (forceStopSolver) break;
+      const candidate = bucket[i];
+      if (candidate.entry.placed) {
+        bucket.splice(i, 1);
+        continue;
+      }
+
+      const orientation = candidate.orientation;
+      const spacing = placedInStrip ? kerf : 0;
+      if (xCursor + spacing + orientation.width > maxWidth + PACKING_EPSILON) {
+        i++;
+        continue;
+      }
+
+      const placementX = xCursor + spacing;
+      recordPlacementLocal({ x: placementX }, stripY, candidate.entry, orientation, plateIdx, placements, placementsByPlate, bestOrder, metrics);
+      placedInStrip = true;
+      xCursor = placementX + orientation.width;
+      bucket.splice(i, 1);
+    }
+
+    if (!placedInStrip) {
+      heightBuckets.delete(heightKey);
+      heightKeys.splice(selectedIdx, 1);
+      continue;
+    }
+
+    stripY += heightKey + kerf;
+
+    if (!bucket.length) {
+      heightBuckets.delete(heightKey);
+      heightKeys.splice(selectedIdx, 1);
+    }
+  }
+}
+
 function solveWithGuillotineLocal(instances, pieces, options = {}) {
   if (!Array.isArray(instances) || !instances.length) return null;
 
@@ -2222,12 +2371,14 @@ function solveWithGuillotineLocal(instances, pieces, options = {}) {
   const bestOrder = [];
   const metrics = { usedArea: 0 };
 
+  const strategy = options.strategy || 'vertical';
+
   for (let plateIdx = 0; plateIdx < states.length && !forceStopSolver; plateIdx++) {
     if (!hasUnplacedPiecesLocal(pool)) break;
     const state = states[plateIdx];
     if (state.usableW <= PACKING_EPSILON || state.usableH <= PACKING_EPSILON) continue;
 
-    buildColumnPlan({
+    const plannerArgs = {
       state,
       pool,
       plateIdx,
@@ -2238,7 +2389,13 @@ function solveWithGuillotineLocal(instances, pieces, options = {}) {
       placementsByPlate,
       bestOrder,
       metrics
-    });
+    };
+
+    if (strategy === 'horizontal') {
+      buildColumnPlan(plannerArgs);
+    } else {
+      buildColumnPlanVertical(plannerArgs);
+    }
   }
 
   const leftovers = pool
@@ -2331,6 +2488,9 @@ function collectSolverInputs() {
     totalRequested += qty;
   });
 
+  const layoutStrategyEl = document.getElementById('layoutStrategy');
+  const strategy = layoutStrategyEl && layoutStrategyEl.value === 'horizontal' ? 'horizontal' : 'vertical';
+
   return {
     instances,
     instanceMeta,
@@ -2338,7 +2498,8 @@ function collectSolverInputs() {
     pieces,
     totalRequested,
     allowAutoRotate,
-    kerf
+    kerf,
+    strategy
   };
 }
 
@@ -3557,8 +3718,15 @@ clearAllBtn.addEventListener('click', () => {
   lastOptimizationHash = null;
   lastOptimizationResult = null;
   lastSuccessfulSolution = null; // Limpiar solución guardada
+  reuseComparisonHash = null;
+  reuseComparisonResult = null;
+  reuseEvaluationInProgress = false;
   if (sheetCanvasEl) {
     sheetCanvasEl.innerHTML = '';
+  }
+  if (layoutRecommendationEl) {
+    layoutRecommendationEl.style.display = 'none';
+    layoutRecommendationEl.textContent = '';
   }
   
   // Actualizar estado del botón CNC después de limpiar
@@ -4613,6 +4781,18 @@ function collectPiecesFromState(state) {
   return pieces;
 }
 
+async function renderAdvancedLayoutForCurrentStrategy() {
+  const strategy = getSelectedLayoutStrategy();
+  if (strategy === 'horizontal') {
+    await renderWithAdvancedOptimizer();
+  } else if (strategy === 'combined') {
+    await renderCombinedAdvancedLayout();
+  } else {
+    await renderWithAdvancedOptimizerBands();
+  }
+  await updateLayoutReuseRecommendation();
+}
+
 /**
  * Renderiza con el optimizador avanzado (se ejecuta automáticamente)
  */
@@ -4734,6 +4914,452 @@ async function renderWithAdvancedOptimizer() {
       errorDiv.textContent = '⚠️ Error al optimizar: ' + error.message;
       sheetCanvasEl.appendChild(errorDiv);
     }
+  }
+}
+
+/**
+ * Renderiza con el optimizador avanzado priorizando franjas horizontales
+ */
+async function renderWithAdvancedOptimizerBands() {
+  try {
+    const pieces = gatherPiecesFromRows();
+    if (!pieces || pieces.length === 0) {
+      if (sheetCanvasEl) {
+        sheetCanvasEl.innerHTML = '';
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = 'Agregá piezas para ver el plano optimizado en franjas';
+        sheetCanvasEl.appendChild(hint);
+      }
+      return;
+    }
+
+    const plateRows = getPlates();
+    if (!plateRows || plateRows.length === 0) {
+      if (sheetCanvasEl) {
+        sheetCanvasEl.innerHTML = '';
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = 'Configurá una placa para ver el plano optimizado en franjas';
+        sheetCanvasEl.appendChild(hint);
+      }
+      return;
+    }
+
+    const firstPlate = plateRows[0];
+    const plateWidth = firstPlate.sw || 2740;
+    const plateHeight = firstPlate.sh || 1820;
+    const trimMm = firstPlate.trim?.mm || 0;
+    const trimLeft = firstPlate.trim?.left ? trimMm : 0;
+    const trimTop = firstPlate.trim?.top ? trimMm : 0;
+    const trimRight = firstPlate.trim?.right ? trimMm : 0;
+    const trimBottom = firstPlate.trim?.bottom ? trimMm : 0;
+
+    const plateSpec = {
+      width: plateWidth,
+      height: plateHeight
+    };
+
+    const kerf = getKerfMm();
+    const options = {
+      algorithm: 'simulated-annealing',
+      iterations: 500,
+      kerf,
+      trimLeft,
+      trimTop,
+      trimRight,
+      trimBottom,
+      allowRotation: autoRotateToggle ? autoRotateToggle.checked : true,
+      rotationPenalty: 500,
+      rotationMixPenalty: 7500,
+      orientationPreference: 'horizontal-bands'
+    };
+
+    const dataHash = JSON.stringify({
+      solverMode: 'band-only-v1',
+      pieces: pieces.map((p) => ({
+        w: p.width,
+        h: p.height,
+        id: p.id
+      })),
+      plate: { w: plateWidth, h: plateHeight },
+      options: {
+        kerf,
+        trimLeft,
+        trimTop,
+        trimRight,
+        trimBottom,
+        rot: options.allowRotation,
+        rotationPenalty: options.rotationPenalty,
+        rotationMixPenalty: options.rotationMixPenalty,
+        orientationPreference: options.orientationPreference
+      }
+    });
+
+    if (lastBandOptimizationHash === dataHash && lastBandOptimizationResult) {
+      console.log('✅ Reutilizando optimización en franjas (sin cambios en datos)');
+      const newPiecesMap = new Map(pieces.map((p) => [p.id, p]));
+      const { optimizeCutLayoutBands, generateReport } = await import('./advanced-optimizer.js');
+      const report = generateReport(lastBandOptimizationResult);
+      updateSummaryWithAdvancedReport(report);
+      renderAdvancedSolution(lastBandOptimizationResult, plateSpec, newPiecesMap);
+      return;
+    }
+
+    console.log('🔄 Ejecutando optimización en franjas (datos modificados)');
+    const { optimizeCutLayoutBands, generateReport } = await import('./advanced-optimizer.js');
+    const result = optimizeCutLayoutBands(pieces, plateSpec, options);
+    const report = generateReport(result);
+
+    lastBandOptimizationHash = dataHash;
+    lastBandOptimizationResult = result;
+
+    updateSummaryWithAdvancedReport(report);
+    renderAdvancedSolution(result, plateSpec);
+  } catch (error) {
+    console.error('Error en renderWithAdvancedOptimizerBands:', error);
+    if (sheetCanvasEl) {
+      sheetCanvasEl.innerHTML = '';
+      const errorDiv = document.createElement('div');
+      errorDiv.style.cssText = 'background:#fee;color:#c00;padding:12px;border-radius:6px;';
+      errorDiv.textContent = '⚠️ Error al optimizar en franjas: ' + error.message;
+      sheetCanvasEl.appendChild(errorDiv);
+    }
+  }
+}
+
+async function renderCombinedAdvancedLayout() {
+  try {
+    const pieces = gatherPiecesFromRows();
+    if (!pieces || pieces.length === 0) {
+      if (sheetCanvasEl) {
+        sheetCanvasEl.innerHTML = '';
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = 'Agregá piezas para permitir la comparación de estrategias.';
+        sheetCanvasEl.appendChild(hint);
+      }
+      return;
+    }
+
+    const plateRows = getPlates();
+    if (!plateRows || plateRows.length === 0) {
+      if (sheetCanvasEl) {
+        sheetCanvasEl.innerHTML = '';
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = 'Configurá una placa para evaluar la estrategia combinada.';
+        sheetCanvasEl.appendChild(hint);
+      }
+      return;
+    }
+
+    const comparison = await computeReuseComparisonDetails();
+    if (!comparison || !comparison.recommendation) {
+      await renderWithAdvancedOptimizerBands();
+      return;
+    }
+
+    const optimizerModule = await import('./advanced-optimizer.js');
+    const { optimizeCutLayout, optimizeCutLayoutBands, generateReport } = optimizerModule;
+
+    const plateSpec = {
+      width: comparison.plateSpec?.width ?? (plateRows[0].sw || 2740),
+      height: comparison.plateSpec?.height ?? (plateRows[0].sh || 1820)
+    };
+
+    const baseOptionsSource = comparison.baseOptions || {};
+    const firstPlateRow = plateRows[0] || {};
+    const rowTrim = firstPlateRow.trim || {};
+
+    const resolveTrimValue = (primary, secondary, isEnabled) => {
+      if (Number.isFinite(Number(primary))) return Number(primary);
+      if (Number.isFinite(Number(secondary))) return Number(secondary);
+      if (isEnabled) {
+        const trimMm = Number(rowTrim.mm);
+        if (Number.isFinite(trimMm)) {
+          return trimMm;
+        }
+      }
+      return 0;
+    };
+
+    const baseOptions = {
+      algorithm: typeof baseOptionsSource.algorithm === 'string' ? baseOptionsSource.algorithm : 'simulated-annealing',
+      iterations: Number.isFinite(Number(baseOptionsSource.iterations)) ? Number(baseOptionsSource.iterations) : 500,
+      kerf: Number.isFinite(Number(baseOptionsSource.kerf)) ? Number(baseOptionsSource.kerf) : getKerfMm(),
+      allowRotation: baseOptionsSource.allowRotation !== undefined ? baseOptionsSource.allowRotation : (autoRotateToggle ? autoRotateToggle.checked : true),
+      rotationPenalty: Number.isFinite(Number(baseOptionsSource.rotationPenalty)) ? Number(baseOptionsSource.rotationPenalty) : 500,
+      rotationMixPenalty: Number.isFinite(Number(baseOptionsSource.rotationMixPenalty)) ? Number(baseOptionsSource.rotationMixPenalty) : 7500
+    };
+
+    baseOptions.trimLeft = resolveTrimValue(baseOptionsSource.trimLeft, comparison.plateSpec?.trimLeft, !!rowTrim.left);
+    baseOptions.trimTop = resolveTrimValue(baseOptionsSource.trimTop, comparison.plateSpec?.trimTop, !!rowTrim.top);
+    baseOptions.trimRight = resolveTrimValue(baseOptionsSource.trimRight, comparison.plateSpec?.trimRight, !!rowTrim.right);
+    baseOptions.trimBottom = resolveTrimValue(baseOptionsSource.trimBottom, comparison.plateSpec?.trimBottom, !!rowTrim.bottom);
+
+    const horizontalResult = comparison.horizontalResult;
+    const verticalResult = comparison.verticalResult;
+
+    const horizontalCount = Array.isArray(horizontalResult?.plates) ? horizontalResult.plates.length : Infinity;
+    const verticalCount = Array.isArray(verticalResult?.plates) ? verticalResult.plates.length : Infinity;
+
+    let baseResult = horizontalResult;
+    if (verticalCount < horizontalCount) {
+      baseResult = verticalResult;
+    } else if (!horizontalResult && verticalResult) {
+      baseResult = verticalResult;
+    }
+
+    if (!baseResult || !Array.isArray(baseResult.plates) || !baseResult.plates.length) {
+      const fallbackWinner = comparison.recommendation.winner === 'horizontal' ? horizontalResult : verticalResult;
+      if (fallbackWinner) {
+        const report = generateReport(fallbackWinner);
+        updateSummaryWithAdvancedReport(report);
+        const piecesMap = new Map(pieces.map(piece => [piece.id, piece]));
+        renderAdvancedSolution(fallbackWinner, plateSpec, piecesMap);
+        return;
+      }
+      await renderWithAdvancedOptimizerBands();
+      return;
+    }
+
+    const piecesMap = new Map(pieces.map(piece => [piece.id, piece]));
+
+    const computeEvaluationFromPlates = (plates, options) => {
+      const rotationPenalty = Number.isFinite(options?.rotationPenalty) ? Math.max(0, options.rotationPenalty) : 0;
+      const rotationMixPenalty = Number.isFinite(options?.rotationMixPenalty) ? Math.max(0, options.rotationMixPenalty) : 0;
+      const allowRotation = options?.allowRotation !== false;
+
+      const totalArea = plates.reduce((sum, plate) => {
+        const widthValue = Number.isFinite(Number(plate?.plateWidth)) ? Number(plate.plateWidth) : plateSpec.width;
+        const heightValue = Number.isFinite(Number(plate?.plateHeight)) ? Number(plate.plateHeight) : plateSpec.height;
+        const plateArea = Number.isFinite(Number(plate?.totalArea)) ? Number(plate.totalArea) : (widthValue * heightValue);
+        return sum + plateArea;
+      }, 0);
+
+      const usedArea = plates.reduce((sum, plate) => {
+        const usage = Number.isFinite(Number(plate?.usedArea)) ? Number(plate.usedArea) : 0;
+        return sum + usage;
+      }, 0);
+      const wasteArea = totalArea - usedArea;
+      const utilization = totalArea > 0 ? (usedArea / totalArea) * 100 : 0;
+
+      let rotatedCount = 0;
+      let mixedRotationRows = 0;
+      if (allowRotation && (rotationPenalty > 0 || rotationMixPenalty > 0)) {
+        const rotationCounting = rotationMixPenalty > 0 ? new Map() : null;
+        plates.forEach((plate) => {
+          if (!Array.isArray(plate.placedPieces)) return;
+          plate.placedPieces.forEach((entry) => {
+            const rotated = entry?.piece?.rotated ? 1 : 0;
+            rotatedCount += rotated;
+            if (rotationCounting) {
+              const rowIdx = entry?.piece?.rowIndex ?? entry?.piece?.rowIdx ?? entry?.piece?.row;
+              if (rowIdx != null) {
+                const key = String(rowIdx);
+                const state = rotationCounting.get(key) || { rotated: 0, total: 0 };
+                state.rotated += rotated;
+                state.total += 1;
+                rotationCounting.set(key, state);
+              }
+            }
+          });
+        });
+
+        if (rotationCounting) {
+          rotationCounting.forEach((state) => {
+            if (state.total > 0 && state.rotated > 0 && state.rotated < state.total) {
+              mixedRotationRows += 1;
+            }
+          });
+        }
+      }
+
+      const rotationPenaltyApplied = rotatedCount * rotationPenalty;
+      const rotationMixPenaltyApplied = mixedRotationRows * rotationMixPenalty;
+
+      return {
+        plateCount: plates.length,
+        totalArea,
+        usedArea,
+        wasteArea,
+        utilization,
+        rotationPenaltyApplied,
+        rotationMixPenaltyApplied,
+        rotatedCount,
+        mixedRotationRows,
+        score: usedArea - (plates.length * 10000) - rotationPenaltyApplied - rotationMixPenaltyApplied
+      };
+    };
+
+    const assessPlateResult = (result, specWithTrim, orientationLabel) => {
+      if (!result || !Array.isArray(result.plates) || !result.plates.length) {
+        return {
+          valid: false,
+          orientation: orientationLabel,
+          result,
+          utilization: 0,
+          bestRect: { area: 0 }
+        };
+      }
+
+      const plate = result.plates[0];
+      const remainingCount = Array.isArray(result.remaining) ? result.remaining.length : 0;
+      const metrics = evaluateLayoutReusePotential(result, specWithTrim);
+      const bestRect = metrics?.bestRect || { area: 0, width: 0, height: 0, x: 0, y: 0 };
+      const utilization = Number.isFinite(Number(plate?.utilization)) ? Number(plate.utilization) : (plate.totalArea > 0 ? (plate.usedArea / plate.totalArea) * 100 : 0);
+
+      return {
+        valid: remainingCount === 0 && result.plates.length === 1,
+        orientation: orientationLabel,
+        result,
+        utilization,
+        bestRect
+      };
+    };
+
+    const chooseBetterPlate = (a, b) => {
+      if (a.valid && !b.valid) return a;
+      if (!a.valid && b.valid) return b;
+      if (!a.valid && !b.valid) return a;
+
+      const aPlateCount = Array.isArray(a.result?.plates) ? a.result.plates.length : Infinity;
+      const bPlateCount = Array.isArray(b.result?.plates) ? b.result.plates.length : Infinity;
+      if (aPlateCount !== bPlateCount) {
+        return aPlateCount < bPlateCount ? a : b;
+      }
+
+      const utilDiff = (a.utilization || 0) - (b.utilization || 0);
+      if (Math.abs(utilDiff) > 0.01) {
+        return utilDiff > 0 ? a : b;
+      }
+
+      const areaDiff = (a.bestRect?.area || 0) - (b.bestRect?.area || 0);
+      if (Math.abs(areaDiff) > REUSE_EPS) {
+        return areaDiff > 0 ? a : b;
+      }
+
+      return a;
+    };
+
+    const combinedPlates = [];
+    const combinedRemaining = [];
+
+    for (const plate of baseResult.plates) {
+      const placements = typeof plate.getPlacedPiecesWithCoords === 'function'
+        ? plate.getPlacedPiecesWithCoords()
+        : [];
+
+      const pieceIds = new Set();
+      placements.forEach((placement) => {
+        const id = placement?.piece?.id;
+        if (id != null) {
+          pieceIds.add(id);
+        }
+      });
+
+      const subsetPieceIds = Array.from(pieceIds);
+
+      const subsetPiecesColumn = subsetPieceIds.map((id) => {
+        const original = piecesMap.get(id);
+        if (!original) return null;
+        return { ...original };
+      }).filter(Boolean);
+
+      const subsetPiecesBand = subsetPieceIds.map((id) => {
+        const original = piecesMap.get(id);
+        if (!original) return null;
+        return { ...original };
+      }).filter(Boolean);
+
+      const plateWidth = Number.isFinite(Number(plate?.plateWidth)) ? Number(plate.plateWidth) : plateSpec.width;
+      const plateHeight = Number.isFinite(Number(plate?.plateHeight)) ? Number(plate.plateHeight) : plateSpec.height;
+      const trimLeft = Number.isFinite(Number(plate?.trimLeft)) ? Number(plate.trimLeft) : baseOptions.trimLeft;
+      const trimTop = Number.isFinite(Number(plate?.trimTop)) ? Number(plate.trimTop) : baseOptions.trimTop;
+      const trimRight = Number.isFinite(Number(plate?.trimRight)) ? Number(plate.trimRight) : baseOptions.trimRight;
+      const trimBottom = Number.isFinite(Number(plate?.trimBottom)) ? Number(plate.trimBottom) : baseOptions.trimBottom;
+
+      const specWithTrim = {
+        width: plateWidth,
+        height: plateHeight,
+        trimLeft,
+        trimTop,
+        trimRight,
+        trimBottom
+      };
+
+      if (!subsetPiecesColumn.length || !subsetPiecesBand.length ||
+          subsetPiecesColumn.length !== subsetPieceIds.length ||
+          subsetPiecesBand.length !== subsetPieceIds.length) {
+        combinedPlates.push(plate);
+        continue;
+      }
+
+      const plateOptions = {
+        ...baseOptions,
+        trimLeft,
+        trimTop,
+        trimRight,
+        trimBottom
+      };
+
+      let columnResult = null;
+      let bandResult = null;
+
+      try {
+        columnResult = optimizeCutLayout(subsetPiecesColumn, { width: plateWidth, height: plateHeight }, plateOptions);
+      } catch (err) {
+        console.warn('No se pudo recalcular placa (columnas):', err);
+      }
+
+      try {
+        bandResult = optimizeCutLayoutBands(subsetPiecesBand, { width: plateWidth, height: plateHeight }, { ...plateOptions, orientationPreference: 'horizontal-bands' });
+      } catch (err) {
+        console.warn('No se pudo recalcular placa (bandas):', err);
+      }
+
+      const evaluatedColumn = assessPlateResult(columnResult, specWithTrim, 'column');
+      const evaluatedBand = assessPlateResult(bandResult, specWithTrim, 'band');
+
+      let chosen = chooseBetterPlate(evaluatedColumn, evaluatedBand);
+      if (!chosen.valid) {
+        chosen = {
+          valid: true,
+          orientation: 'fallback',
+          result: {
+            plates: [plate],
+            remaining: []
+          },
+          utilization: Number.isFinite(Number(plate?.utilization)) ? Number(plate.utilization) : (plate.totalArea > 0 ? (plate.usedArea / plate.totalArea) * 100 : 0),
+          bestRect: { area: 0 }
+        };
+      }
+
+      const chosenPlate = Array.isArray(chosen.result?.plates) && chosen.result.plates.length
+        ? chosen.result.plates[0]
+        : plate;
+
+      combinedPlates.push(chosenPlate);
+
+      if (Array.isArray(chosen.result?.remaining) && chosen.result.remaining.length) {
+        combinedRemaining.push(...chosen.result.remaining);
+      }
+    }
+
+    const combinedResult = {
+      plates: combinedPlates,
+      remaining: combinedRemaining,
+      evaluation: computeEvaluationFromPlates(combinedPlates, baseOptions)
+    };
+
+    const report = generateReport(combinedResult);
+    updateSummaryWithAdvancedReport(report);
+
+    renderAdvancedSolution(combinedResult, plateSpec, piecesMap);
+  } catch (error) {
+    console.error('Error en renderCombinedAdvancedLayout:', error);
+    await renderWithAdvancedOptimizerBands();
   }
 }
 
@@ -5174,15 +5800,27 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
     
     // Líneas de corte guillotina
     const cuts = plate.getCutSequence();
+    const isStripPlate = Array.isArray(plate?.strips);
     
     // Cortes verticales
+    // Usar los rangos reales de cada corte vertical para respetar la altura del tramo
     cuts.vertical.forEach(cut => {
+      const cutX = Number.isFinite(Number(cut.position)) ? Number(cut.position) : 0;
+      const startY = Number.isFinite(Number(cut.y)) ? Number(cut.y) : Number(plate?.trimTop || 0);
+      const plateHeight = Number.isFinite(Number(plate?.plateHeight)) ? Number(plate.plateHeight) : plateSpec.height;
+      const trimBottom = Number(plate?.trimBottom || 0);
+      const defaultHeight = Math.max(0, plateHeight - trimBottom - startY);
+      const height = Number.isFinite(Number(cut.height)) && Number(cut.height) > 0
+        ? Number(cut.height)
+        : defaultHeight;
+      const endY = startY + height;
+
       const line = document.createElementNS(svgNS, 'line');
       line.setAttribute('class', 'cut-line');
-      line.setAttribute('x1', String(ox + cut.position * scale));
-      line.setAttribute('y1', String(oy));
-      line.setAttribute('x2', String(ox + cut.position * scale));
-      line.setAttribute('y2', String(oy + contentH));
+      line.setAttribute('x1', String(ox + cutX * scale));
+      line.setAttribute('y1', String(oy + startY * scale));
+      line.setAttribute('x2', String(ox + cutX * scale));
+      line.setAttribute('y2', String(oy + endY * scale));
       line.setAttribute('stroke', '#10b981');
       line.setAttribute('stroke-width', '1');
       line.setAttribute('stroke-dasharray', '5,5');
@@ -5190,20 +5828,32 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
       svg.appendChild(line);
     });
     
-    // Cortes horizontales
-    cuts.horizontal.forEach(cut => {
-      const line = document.createElementNS(svgNS, 'line');
-      line.setAttribute('class', 'cut-line');
-      line.setAttribute('x1', String(ox + cut.x * scale));
-      line.setAttribute('y1', String(oy + cut.position * scale));
-      line.setAttribute('x2', String(ox + (cut.x + cut.width) * scale));
-      line.setAttribute('y2', String(oy + cut.position * scale));
-      line.setAttribute('stroke', '#3b82f6');
-      line.setAttribute('stroke-width', '1');
-      line.setAttribute('stroke-dasharray', '5,5');
-      line.setAttribute('opacity', '0.5');
-      svg.appendChild(line);
-    });
+    if (!isStripPlate) {
+      // En layouts no basados en strips aún se muestran cortes horizontales auxiliares
+      cuts.horizontal.forEach(cut => {
+        const startX = Number.isFinite(Number(cut.x)) ? Number(cut.x) : Number(plate?.trimLeft || 0);
+        const plateWidth = Number.isFinite(Number(plate?.plateWidth)) ? Number(plate.plateWidth) : plateSpec.width;
+        const trimRight = Number(plate?.trimRight || 0);
+        const defaultWidth = Math.max(0, plateWidth - trimRight - startX);
+        const width = Number.isFinite(Number(cut.width)) && Number(cut.width) > 0
+          ? Number(cut.width)
+          : defaultWidth;
+        const endX = startX + width;
+        const cutY = Number.isFinite(Number(cut.position)) ? Number(cut.position) : Number(plate?.trimTop || 0);
+
+        const line = document.createElementNS(svgNS, 'line');
+        line.setAttribute('class', 'cut-line');
+        line.setAttribute('x1', String(ox + startX * scale));
+        line.setAttribute('y1', String(oy + cutY * scale));
+        line.setAttribute('x2', String(ox + endX * scale));
+        line.setAttribute('y2', String(oy + cutY * scale));
+        line.setAttribute('stroke', '#3b82f6');
+        line.setAttribute('stroke-width', '1');
+        line.setAttribute('stroke-dasharray', '5,5');
+        line.setAttribute('opacity', '0.5');
+        svg.appendChild(line);
+      });
+    }
     
     wrap.appendChild(svg);
     holder.appendChild(wrap);
@@ -5230,6 +5880,480 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
   }
   
   console.log('✅ Visualización renderizada con', plates.length, 'placa(s)');
+}
+
+function subtractIntervalSegments(intervals, removeStart, removeEnd, epsilon = REUSE_EPS) {
+  if (!Array.isArray(intervals) || intervals.length === 0) {
+    return [];
+  }
+
+  const start = Number.isFinite(Number(removeStart)) ? Number(removeStart) : removeStart;
+  const end = Number.isFinite(Number(removeEnd)) ? Number(removeEnd) : removeEnd;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end - start <= epsilon) {
+    return [...intervals];
+  }
+
+  const result = [];
+  for (const interval of intervals) {
+    const intervalStart = interval?.start ?? 0;
+    const intervalEnd = interval?.end ?? 0;
+    if (intervalEnd - intervalStart <= epsilon) {
+      continue;
+    }
+
+    const overlapStart = Math.max(intervalStart, start);
+    const overlapEnd = Math.min(intervalEnd, end);
+
+    if (overlapEnd - overlapStart <= epsilon) {
+      result.push(interval);
+      continue;
+    }
+
+    if (overlapStart - intervalStart > epsilon) {
+      result.push({ start: intervalStart, end: overlapStart });
+    }
+
+    if (intervalEnd - overlapEnd > epsilon) {
+      result.push({ start: overlapEnd, end: intervalEnd });
+    }
+  }
+
+  return result;
+}
+
+function computeLargestFreeRectangleForPlate(plate, referenceSpec = {}) {
+  if (!plate || typeof plate.getPlacedPiecesWithCoords !== 'function') {
+    return { area: 0, width: 0, height: 0, x: 0, y: 0 };
+  }
+
+  const plateWidth = Number.isFinite(Number(plate?.plateWidth))
+    ? Number(plate.plateWidth)
+    : Number(referenceSpec.width || 0);
+  const plateHeight = Number.isFinite(Number(plate?.plateHeight))
+    ? Number(plate.plateHeight)
+    : Number(referenceSpec.height || 0);
+
+  const trimLeft = Number(plate?.trimLeft ?? referenceSpec.trimLeft ?? 0) || 0;
+  const trimTop = Number(plate?.trimTop ?? referenceSpec.trimTop ?? 0) || 0;
+  const trimRight = Number(plate?.trimRight ?? referenceSpec.trimRight ?? 0) || 0;
+  const trimBottom = Number(plate?.trimBottom ?? referenceSpec.trimBottom ?? 0) || 0;
+
+  const minX = trimLeft;
+  const minY = trimTop;
+  const maxX = Math.max(minX, plateWidth - trimRight);
+  const maxY = Math.max(minY, plateHeight - trimBottom);
+
+  if (maxX - minX <= REUSE_EPS || maxY - minY <= REUSE_EPS) {
+    return { area: 0, width: 0, height: 0, x: minX, y: minY };
+  }
+
+  const placements = plate.getPlacedPiecesWithCoords();
+  const normalizedPieces = [];
+  const xCoords = new Set([minX, maxX]);
+  const yCoords = new Set([minY, maxY]);
+
+  for (const placement of placements) {
+    const px = Number(placement?.x ?? placement?.left ?? 0);
+    const py = Number(placement?.y ?? placement?.top ?? 0);
+    const pWidth = Number(placement?.width ?? 0);
+    const pHeight = Number(placement?.height ?? 0);
+
+    if (!Number.isFinite(px) || !Number.isFinite(py) || pWidth <= REUSE_EPS || pHeight <= REUSE_EPS) {
+      continue;
+    }
+
+    const right = px + pWidth;
+    const bottom = py + pHeight;
+
+    normalizedPieces.push({
+      x: px,
+      y: py,
+      width: pWidth,
+      height: pHeight,
+      right,
+      bottom
+    });
+
+    xCoords.add(px);
+    xCoords.add(right);
+    yCoords.add(py);
+    yCoords.add(bottom);
+  }
+
+  const xAxis = Array.from(xCoords).sort((a, b) => a - b);
+  const yAxis = Array.from(yCoords).sort((a, b) => a - b);
+
+  let bestRect = { area: 0, width: 0, height: 0, x: minX, y: minY };
+
+  for (let topIdx = 0; topIdx < yAxis.length - 1; topIdx++) {
+    const top = yAxis[topIdx];
+    for (let bottomIdx = topIdx + 1; bottomIdx < yAxis.length; bottomIdx++) {
+      const bottom = yAxis[bottomIdx];
+      const height = bottom - top;
+      if (height <= REUSE_EPS) {
+        continue;
+      }
+
+      let freeIntervals = [{ start: minX, end: maxX }];
+
+      for (const piece of normalizedPieces) {
+        if (piece.y >= bottom - REUSE_EPS || piece.bottom <= top + REUSE_EPS) {
+          continue;
+        }
+        freeIntervals = subtractIntervalSegments(freeIntervals, piece.x, piece.right, REUSE_EPS);
+        if (!freeIntervals.length) {
+          break;
+        }
+      }
+
+      for (const interval of freeIntervals) {
+        const width = interval.end - interval.start;
+        if (width <= REUSE_EPS) {
+          continue;
+        }
+
+        const area = width * height;
+        const candidateIsBetter =
+          area > bestRect.area + REUSE_EPS ||
+          (Math.abs(area - bestRect.area) <= REUSE_EPS &&
+            Math.min(width, height) > Math.min(bestRect.width, bestRect.height) + REUSE_EPS);
+
+        if (candidateIsBetter) {
+          bestRect = {
+            area,
+            width,
+            height,
+            x: interval.start,
+            y: top
+          };
+        }
+      }
+    }
+  }
+
+  return bestRect;
+}
+
+function evaluateLayoutReusePotential(optimizationResult, plateSpec) {
+  if (!optimizationResult || !Array.isArray(optimizationResult.plates)) {
+    return {
+      plates: [],
+      bestRect: { area: 0, width: 0, height: 0, x: 0, y: 0 },
+      bestPlateIndex: -1,
+      bestRectShare: 0
+    };
+  }
+
+  const plateMetrics = optimizationResult.plates.map((plate, index) => {
+    const rect = computeLargestFreeRectangleForPlate(plate, plateSpec);
+    const plateWidth = Number.isFinite(Number(plate?.plateWidth))
+      ? Number(plate.plateWidth)
+      : Number(plateSpec.width || 0);
+    const plateHeight = Number.isFinite(Number(plate?.plateHeight))
+      ? Number(plate.plateHeight)
+      : Number(plateSpec.height || 0);
+    const trimLeft = Number(plate?.trimLeft ?? plateSpec.trimLeft ?? 0) || 0;
+    const trimTop = Number(plate?.trimTop ?? plateSpec.trimTop ?? 0) || 0;
+    const trimRight = Number(plate?.trimRight ?? plateSpec.trimRight ?? 0) || 0;
+    const trimBottom = Number(plate?.trimBottom ?? plateSpec.trimBottom ?? 0) || 0;
+    const usableWidth = Math.max(0, plateWidth - trimLeft - trimRight);
+    const usableHeight = Math.max(0, plateHeight - trimTop - trimBottom);
+    const usableArea = usableWidth * usableHeight;
+    const share = usableArea > REUSE_EPS ? rect.area / usableArea : 0;
+
+    return {
+      plateIndex: index,
+      bestRect: rect,
+      usableArea,
+      bestRectShare: share
+    };
+  });
+
+  let bestPlateIndex = -1;
+  let bestRect = { area: 0, width: 0, height: 0, x: 0, y: 0 };
+  let bestShare = 0;
+
+  for (const entry of plateMetrics) {
+    const rect = entry.bestRect;
+    if (!rect || rect.area <= REUSE_EPS) {
+      continue;
+    }
+
+    const candidateIsBetter =
+      rect.area > bestRect.area + REUSE_EPS ||
+      (Math.abs(rect.area - bestRect.area) <= REUSE_EPS &&
+        Math.min(rect.width, rect.height) > Math.min(bestRect.width, bestRect.height) + REUSE_EPS);
+
+    if (candidateIsBetter) {
+      bestRect = rect;
+      bestPlateIndex = entry.plateIndex;
+      bestShare = entry.bestRectShare;
+    }
+  }
+
+  return {
+    plates: plateMetrics,
+    bestRect,
+    bestPlateIndex,
+    bestRectShare: bestShare
+  };
+}
+
+function formatRectangleForDisplay(rect) {
+  if (!rect || rect.area <= REUSE_EPS) {
+    return 'sin espacio libre significativo';
+  }
+  const width = Math.max(0, rect.width);
+  const height = Math.max(0, rect.height);
+  const areaM2 = rect.area > 0 ? (rect.area / 1_000_000).toFixed(2) : '0.00';
+  return `${Math.round(width)} × ${Math.round(height)} mm (${areaM2} m²)`;
+}
+
+function buildReuseRecommendationResult(verticalMetrics, horizontalMetrics, verticalResult, horizontalResult) {
+  const verticalRect = verticalMetrics?.bestRect || { area: 0, width: 0, height: 0, x: 0, y: 0 };
+  const horizontalRect = horizontalMetrics?.bestRect || { area: 0, width: 0, height: 0, x: 0, y: 0 };
+  const verticalPlateCount = Array.isArray(verticalResult?.plates) ? verticalResult.plates.length : null;
+  const horizontalPlateCount = Array.isArray(horizontalResult?.plates) ? horizontalResult.plates.length : null;
+
+  let winner = 'tie';
+
+  if (Number.isFinite(verticalPlateCount) && Number.isFinite(horizontalPlateCount) && verticalPlateCount !== horizontalPlateCount) {
+    winner = verticalPlateCount < horizontalPlateCount ? 'vertical' : 'horizontal';
+  } else if (Number.isFinite(verticalPlateCount) && !Number.isFinite(horizontalPlateCount)) {
+    winner = 'vertical';
+  } else if (!Number.isFinite(verticalPlateCount) && Number.isFinite(horizontalPlateCount)) {
+    winner = 'horizontal';
+  } else if (verticalRect.area > horizontalRect.area + REUSE_EPS) {
+    winner = 'vertical';
+  } else if (horizontalRect.area > verticalRect.area + REUSE_EPS) {
+    winner = 'horizontal';
+  } else {
+    const verticalMin = Math.min(verticalRect.width, verticalRect.height);
+    const horizontalMin = Math.min(horizontalRect.width, horizontalRect.height);
+    if (verticalMin > horizontalMin + REUSE_EPS) {
+      winner = 'vertical';
+    } else if (horizontalMin > verticalMin + REUSE_EPS) {
+      winner = 'horizontal';
+    }
+  }
+
+  const enrichedVertical = { ...(verticalMetrics || {}), plateCount: verticalPlateCount };
+  const enrichedHorizontal = { ...(horizontalMetrics || {}), plateCount: horizontalPlateCount };
+
+  return { winner, vertical: enrichedVertical, horizontal: enrichedHorizontal };
+}
+
+async function computeReuseComparisonDetails() {
+  const pieces = gatherPiecesFromRows();
+  const plateRows = getPlates();
+
+  if (!pieces || !pieces.length || !plateRows || !plateRows.length) {
+    reuseComparisonHash = null;
+    reuseComparisonResult = null;
+    reuseComparisonDetails = null;
+    return null;
+  }
+
+  const firstPlate = plateRows[0];
+  const plateWidth = firstPlate.sw || 2740;
+  const plateHeight = firstPlate.sh || 1820;
+  const trimMm = firstPlate.trim?.mm || 0;
+  const trimLeft = firstPlate.trim?.left ? trimMm : 0;
+  const trimTop = firstPlate.trim?.top ? trimMm : 0;
+  const trimRight = firstPlate.trim?.right ? trimMm : 0;
+  const trimBottom = firstPlate.trim?.bottom ? trimMm : 0;
+  const kerf = getKerfMm();
+  const allowRotation = autoRotateToggle ? autoRotateToggle.checked : true;
+
+  const hashPayload = {
+    pieces: pieces.map(p => ({ id: p.id, w: p.width, h: p.height })),
+    plate: { w: plateWidth, h: plateHeight },
+    trims: { trimLeft, trimTop, trimRight, trimBottom },
+    options: { kerf, allowRotation }
+  };
+  const nextHash = JSON.stringify(hashPayload);
+
+  if (reuseComparisonHash === nextHash && reuseComparisonResult && reuseComparisonDetails) {
+    return reuseComparisonDetails;
+  }
+
+  if (reuseComparisonPromise) {
+    return reuseComparisonPromise;
+  }
+
+  const executor = async () => {
+    reuseEvaluationInProgress = true;
+    try {
+      const plateSpec = { width: plateWidth, height: plateHeight, trimLeft, trimTop, trimRight, trimBottom };
+
+      const baseOptions = {
+        algorithm: 'simulated-annealing',
+        iterations: 500,
+        kerf,
+        trimLeft,
+        trimTop,
+        trimRight,
+        trimBottom,
+        allowRotation,
+        rotationPenalty: 500,
+        rotationMixPenalty: 7500
+      };
+
+      const columnHashPayload = {
+        solverMode: 'column-only-v1',
+        pieces: hashPayload.pieces,
+        plate: hashPayload.plate,
+        options: {
+          kerf,
+          trimLeft,
+          trimTop,
+          trimRight,
+          trimBottom,
+          rot: allowRotation,
+          rotationPenalty: baseOptions.rotationPenalty,
+          rotationMixPenalty: baseOptions.rotationMixPenalty
+        }
+      };
+
+      const bandHashPayload = {
+        solverMode: 'band-only-v1',
+        pieces: hashPayload.pieces,
+        plate: hashPayload.plate,
+        options: {
+          kerf,
+          trimLeft,
+          trimTop,
+          trimRight,
+          trimBottom,
+          rot: allowRotation,
+          rotationPenalty: baseOptions.rotationPenalty,
+          rotationMixPenalty: baseOptions.rotationMixPenalty,
+          orientationPreference: 'horizontal-bands'
+        }
+      };
+
+      const columnHash = JSON.stringify(columnHashPayload);
+      const bandHash = JSON.stringify(bandHashPayload);
+
+      const optimizerModule = await import('./advanced-optimizer.js');
+      const { optimizeCutLayout, optimizeCutLayoutBands } = optimizerModule;
+
+      let horizontalResult = null;
+      if (lastOptimizationHash === columnHash && lastOptimizationResult) {
+        horizontalResult = lastOptimizationResult;
+      } else {
+        horizontalResult = optimizeCutLayout(pieces, { width: plateWidth, height: plateHeight }, baseOptions);
+        lastOptimizationHash = columnHash;
+        lastOptimizationResult = horizontalResult;
+      }
+
+      let verticalResult = null;
+      if (lastBandOptimizationHash === bandHash && lastBandOptimizationResult) {
+        verticalResult = lastBandOptimizationResult;
+      } else {
+        const bandOptions = { ...baseOptions, orientationPreference: 'horizontal-bands' };
+        verticalResult = optimizeCutLayoutBands(pieces, { width: plateWidth, height: plateHeight }, bandOptions);
+        lastBandOptimizationHash = bandHash;
+        lastBandOptimizationResult = verticalResult;
+      }
+
+      const verticalMetrics = evaluateLayoutReusePotential(verticalResult, plateSpec);
+      const horizontalMetrics = evaluateLayoutReusePotential(horizontalResult, plateSpec);
+      const recommendation = buildReuseRecommendationResult(verticalMetrics, horizontalMetrics, verticalResult, horizontalResult);
+
+      reuseComparisonHash = nextHash;
+      reuseComparisonResult = recommendation;
+      reuseComparisonDetails = {
+        recommendation,
+        verticalResult,
+        horizontalResult,
+        plateSpec,
+        baseOptions
+      };
+
+      return reuseComparisonDetails;
+    } finally {
+      reuseEvaluationInProgress = false;
+    }
+  };
+
+  reuseComparisonPromise = executor();
+  try {
+    const result = await reuseComparisonPromise;
+    return result;
+  } catch (error) {
+    reuseComparisonHash = null;
+    reuseComparisonResult = null;
+    reuseComparisonDetails = null;
+    throw error;
+  } finally {
+    reuseComparisonPromise = null;
+  }
+}
+
+function applyLayoutRecommendation(result) {
+  if (!layoutRecommendationEl) {
+    return;
+  }
+
+  if (!result) {
+    layoutRecommendationEl.style.display = 'none';
+    return;
+  }
+
+  const { winner, vertical, horizontal } = result;
+  const verticalRect = vertical?.bestRect;
+  const horizontalRect = horizontal?.bestRect;
+  const verticalCount = Number.isFinite(vertical?.plateCount) ? vertical.plateCount : null;
+  const horizontalCount = Number.isFinite(horizontal?.plateCount) ? horizontal.plateCount : null;
+
+  const formatCountLabel = (count) => {
+    if (!Number.isFinite(count)) {
+      return 'placas N/D';
+    }
+    return `${count} placa${count === 1 ? '' : 's'}`;
+  };
+
+  const verticalText = formatRectangleForDisplay(verticalRect);
+  const horizontalText = formatRectangleForDisplay(horizontalRect);
+
+  if (winner === 'tie') {
+    layoutRecommendationEl.textContent = `Comparativa reutilización: empate. Vertical deja ${verticalText} (${formatCountLabel(verticalCount)}); Horizontal deja ${horizontalText} (${formatCountLabel(horizontalCount)}).`;
+  } else {
+    const winnerLabel = winner === 'vertical' ? 'Vertical' : 'Horizontal';
+    const loserLabel = winner === 'vertical' ? 'Horizontal' : 'Vertical';
+    const winnerRect = winner === 'vertical' ? verticalRect : horizontalRect;
+    const loserRect = winner === 'vertical' ? horizontalRect : verticalRect;
+    const winnerCount = winner === 'vertical' ? verticalCount : horizontalCount;
+    const loserCount = winner === 'vertical' ? horizontalCount : verticalCount;
+    const countInfo = Number.isFinite(winnerCount) && Number.isFinite(loserCount)
+      ? ` (${formatCountLabel(winnerCount)} vs ${formatCountLabel(loserCount)})`
+      : '';
+    layoutRecommendationEl.textContent = `Recomendación: ${winnerLabel}${countInfo} · hueco mayor ${formatRectangleForDisplay(winnerRect)}. ${loserLabel} conserva ${formatRectangleForDisplay(loserRect)}.`;
+  }
+
+  layoutRecommendationEl.style.display = 'block';
+}
+
+async function updateLayoutReuseRecommendation() {
+  if (!layoutRecommendationEl) {
+    return;
+  }
+
+  try {
+    const details = await computeReuseComparisonDetails();
+    if (!details || !details.recommendation) {
+      layoutRecommendationEl.style.display = 'none';
+      return;
+    }
+
+    applyLayoutRecommendation(details.recommendation);
+  } catch (error) {
+    console.error('Error evaluando reutilización de placa:', error);
+    if (layoutRecommendationEl) {
+      layoutRecommendationEl.style.display = 'none';
+    }
+  }
 }
 
 
@@ -6032,28 +7156,30 @@ async function exportPDF() {
         </head>
         <body>
     `;
-    
-    result.forEach((page, index) => {
-      const { canvas, title } = page;
-      const dataUrl = canvas.toDataURL('image/png');
+
+    result.forEach((page, idx) => {
+      const dataUrl = page.canvas.toDataURL('image/png');
+      const name = (page.projectName || '').trim() || 'Plano de cortes';
+      const pageTitle = page.title || `Placa ${idx + 1}`;
       htmlContent += `
-        <div class="page">
-          <h2>${title}</h2>
-          <img src="${dataUrl}" />
-        </div>
+        <section class="page">
+          <h2>${name} · ${pageTitle}</h2>
+          <img src="${dataUrl}" alt="Plano ${idx + 1}" />
+        </section>
       `;
     });
-    
+
     htmlContent += `
           <script>
-            window.onload = function() {
-              setTimeout(() => window.print(), 500);
-            };
+            window.addEventListener('load', () => {
+              window.focus();
+              setTimeout(() => window.print(), 300);
+            });
           </script>
         </body>
       </html>
     `;
-    
+
     win.document.write(htmlContent);
     win.document.close();
   } else {
@@ -6734,8 +7860,17 @@ if (resetAllBtn) {
     lastOptimizationHash = null;
     lastOptimizationResult = null;
     lastSuccessfulSolution = null; // Limpiar solución guardada
+    reuseComparisonHash = null;
+    reuseComparisonResult = null;
+    reuseEvaluationInProgress = false;
+    reuseComparisonPromise = null;
+    reuseComparisonDetails = null;
     if (sheetCanvasEl) {
       sheetCanvasEl.innerHTML = '';
+    }
+    if (layoutRecommendationEl) {
+      layoutRecommendationEl.style.display = 'none';
+      layoutRecommendationEl.textContent = '';
     }
     
     applyPlatesGate();
@@ -7617,7 +8752,7 @@ if (generateLayoutBtn) {
       generateLayoutBtn.disabled = true;
       generateLayoutBtn.textContent = '⏳ Optimizando...';
       
-      await renderWithAdvancedOptimizer();
+      await renderAdvancedLayoutForCurrentStrategy();
       
       console.log('✅ Optimización recalculada');
       
@@ -8862,6 +9997,21 @@ document.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => {
     clearInterval(checkInterval);
   }, 30000);
+
+  const layoutStrategyEl = document.getElementById('layoutStrategy');
+  if (layoutStrategyEl) {
+    layoutStrategyEl.addEventListener('change', async (e) => {
+      const selected = e.target.value === 'horizontal' ? 'horizontal' : 'vertical';
+      console.log('options.strategy', selected);
+      showingAdvancedOptimization = false;
+      lastOptimizationHash = null;
+      lastOptimizationResult = null;
+      lastBandOptimizationHash = null;
+      lastBandOptimizationResult = null;
+      await scheduleLayoutRecalc({ immediate: true });
+      await renderSheetOverview();
+    });
+  }
 });
 
 // Actualizar estado del botón cuando cambie la solución

@@ -249,6 +249,22 @@ class PlateSolution {
       }
 
       currentX += strip.width + (i < this.strips.length - 1 ? this.kerf : 0);
+
+      const stripRight = strip.x + strip.width;
+      const maxUsableX = this.trimLeft + this.usableWidth;
+      if (stripRight > this.trimLeft + EPSILON && stripRight <= maxUsableX + EPSILON) {
+        const alreadyAdded = verticalCuts.some(cut => Math.abs(cut.position - stripRight) < EPSILON);
+        if (!alreadyAdded) {
+          verticalCuts.push({
+            type: 'vertical-cut',
+            position: stripRight,
+            x: stripRight,
+            y: this.trimTop,
+            width: 0,
+            height: this.usableHeight
+          });
+        }
+      }
     }
 
     return {
@@ -720,4 +736,477 @@ export function generateReport(optimizationResult) {
   };
 
   return report;
+}
+
+// ---------------------------------------------------------------------------
+// Optimizador basado en franjas horizontales (bandas)
+// ---------------------------------------------------------------------------
+
+class HorizontalBand {
+  constructor(x, y, maxWidth, kerf) {
+    this.x = x;
+    this.y = y;
+    this.maxWidth = maxWidth;
+    this.kerf = kerf;
+    this.currentWidth = 0;
+    this.bandHeight = 0;
+    this.pieces = [];
+  }
+
+  addPiece(piece) {
+    if (!piece) return false;
+    const isEmpty = this.pieces.length === 0;
+    if (isEmpty) {
+      this.bandHeight = piece.height;
+    } else {
+      if (piece.height > this.bandHeight + EPSILON) {
+        return false;
+      }
+    }
+
+    const spacing = isEmpty ? 0 : this.kerf;
+    const nextWidth = this.currentWidth + spacing + piece.width;
+    if (nextWidth > this.maxWidth + EPSILON) {
+      return false;
+    }
+
+    const placementX = this.x + this.currentWidth + spacing;
+    this.pieces.push({
+      piece,
+      x: placementX,
+      y: this.y,
+      width: piece.width,
+      height: piece.height
+    });
+    this.currentWidth = nextWidth;
+    return true;
+  }
+
+  get height() {
+    return this.bandHeight;
+  }
+
+  get usedArea() {
+    return this.pieces.reduce((sum, entry) => sum + entry.width * entry.height, 0);
+  }
+}
+
+class HorizontalPlateSolution {
+  constructor(plateWidth, plateHeight, trimLeft = 0, trimTop = 0, trimRight = 0, trimBottom = 0, kerf = 0) {
+    this.plateWidth = plateWidth;
+    this.plateHeight = plateHeight;
+    this.trimLeft = trimLeft;
+    this.trimTop = trimTop;
+    this.trimRight = trimRight;
+    this.trimBottom = trimBottom;
+    this.kerf = kerf;
+
+    this.usableWidth = Math.max(0, plateWidth - trimLeft - trimRight);
+    this.usableHeight = Math.max(0, plateHeight - trimTop - trimBottom);
+
+    this.bands = [];
+    this.currentY = trimTop;
+    this.placedPieces = [];
+  }
+
+  place(piece) {
+    if (!piece) return false;
+    if (this.usableWidth <= EPSILON || this.usableHeight <= EPSILON) return false;
+
+    for (const band of this.bands) {
+      if (band.addPiece(piece)) {
+        this.placedPieces.push({ piece, band });
+        return true;
+      }
+    }
+
+    const maxAvailableY = this.plateHeight - this.trimBottom;
+    const remainingHeight = maxAvailableY - this.currentY;
+    if (piece.height > remainingHeight + EPSILON) {
+      return false;
+    }
+
+    const newBand = new HorizontalBand(this.trimLeft, this.currentY, this.usableWidth, this.kerf);
+    if (!newBand.addPiece(piece)) {
+      return false;
+    }
+
+    this.bands.push(newBand);
+    this.currentY += newBand.height + (this.bands.length > 1 ? this.kerf : 0);
+    this.placedPieces.push({ piece, band: newBand });
+    return true;
+  }
+
+  get usedArea() {
+    return this.bands.reduce((sum, band) => sum + band.usedArea, 0);
+  }
+
+  get totalArea() {
+    return this.plateWidth * this.plateHeight;
+  }
+
+  get utilization() {
+    const totalArea = this.totalArea;
+    return totalArea > 0 ? (this.usedArea / totalArea) * 100 : 0;
+  }
+
+  getCutSequence() {
+    const verticalCuts = [];
+    const horizontalCuts = [];
+
+    for (let i = 0; i < this.bands.length; i++) {
+      const band = this.bands[i];
+      if (i > 0) {
+        const cutY = band.y - (this.kerf > 0 ? this.kerf : 0);
+        horizontalCuts.push({
+          type: 'horizontal-cut',
+          position: Math.max(this.trimTop, cutY),
+          x: this.trimLeft,
+          y: Math.max(this.trimTop, cutY),
+          width: this.usableWidth,
+          height: 0
+        });
+      }
+
+      const sortedPieces = [...band.pieces].sort((a, b) => a.x - b.x);
+      for (let j = 0; j < sortedPieces.length; j++) {
+        if (j === 0) continue;
+        const placement = sortedPieces[j];
+        const cutX = placement.x - (this.kerf > 0 ? this.kerf : 0);
+        verticalCuts.push({
+          type: 'vertical-cut',
+          position: Math.max(this.trimLeft, cutX),
+          x: Math.max(this.trimLeft, cutX),
+          y: band.y,
+          width: 0,
+          height: band.height
+        });
+      }
+
+      const bandBottom = band.y + band.height;
+      const effectiveBottom = this.plateHeight - this.trimBottom;
+      if (bandBottom < effectiveBottom - EPSILON) {
+        horizontalCuts.push({
+          type: 'horizontal-cut',
+          position: bandBottom,
+          x: this.trimLeft,
+          y: bandBottom,
+          width: this.usableWidth,
+          height: 0
+        });
+      }
+    }
+
+    return {
+      vertical: verticalCuts,
+      horizontal: horizontalCuts,
+      sequence: [...horizontalCuts, ...verticalCuts]
+    };
+  }
+
+  getPlacedPiecesWithCoords() {
+    const result = [];
+    for (const band of this.bands) {
+      result.push(...band.pieces);
+    }
+    return result;
+  }
+}
+
+function buildBandOrientations(piece, allowRotation) {
+  const orientations = [{
+    ...piece,
+    rotated: piece.rotated ?? false
+  }];
+
+  if (allowRotation && Math.abs(piece.width - piece.height) > EPSILON) {
+    orientations.push({
+      ...piece,
+      width: piece.height,
+      height: piece.width,
+      rotated: !piece.rotated
+    });
+  }
+
+  orientations.sort((a, b) => {
+    if (Math.abs(a.height - b.height) > EPSILON) {
+      return a.height - b.height; // Prefer menor altura para fijar band a la mínima posible
+    }
+    if (Math.abs(b.width - a.width) > EPSILON) {
+      return b.width - a.width; // Si altura similar, usar el que aproveche más ancho
+    }
+    const areaA = a.width * a.height;
+    const areaB = b.width * b.height;
+    return areaB - areaA;
+  });
+
+  return orientations;
+}
+
+function firstFitDecreasingBands(pieces, plateSpec, options = {}) {
+  const {
+    kerf = 5,
+    trimLeft = 13,
+    trimTop = 13,
+    trimRight = 0,
+    trimBottom = 0,
+    allowRotation = true
+  } = options;
+
+  const sorted = sortPieces(pieces, 'height-desc');
+  const plates = [];
+  const remaining = [];
+
+  for (const piece of sorted) {
+    let placed = false;
+    const orientations = buildBandOrientations(piece, allowRotation);
+
+    for (const plate of plates) {
+      for (const orientation of orientations) {
+        if (plate.place({ ...orientation })) {
+          placed = true;
+          break;
+        }
+      }
+      if (placed) break;
+    }
+
+    if (!placed) {
+      const newPlate = new HorizontalPlateSolution(
+        plateSpec.width,
+        plateSpec.height,
+        trimLeft,
+        trimTop,
+        trimRight,
+        trimBottom,
+        kerf
+      );
+
+      let placedInNew = false;
+      for (const orientation of orientations) {
+        if (newPlate.place({ ...orientation })) {
+          placedInNew = true;
+          break;
+        }
+      }
+
+      if (placedInNew) {
+        plates.push(newPlate);
+      } else {
+        remaining.push(piece);
+      }
+    }
+  }
+
+  return { plates, remaining };
+}
+
+function bestFitDecreasingBands(pieces, plateSpec, options = {}) {
+  const {
+    kerf = 5,
+    trimLeft = 13,
+    trimTop = 13,
+    trimRight = 0,
+    trimBottom = 0,
+    allowRotation = true
+  } = options;
+
+  const sorted = sortPieces(pieces, 'height-desc');
+  const plates = [];
+  const remaining = [];
+
+  for (const piece of sorted) {
+    let placed = false;
+    let bestPlate = null;
+    let bestOrientation = null;
+    let bestWaste = Infinity;
+    const orientations = buildBandOrientations(piece, allowRotation);
+
+    for (const plate of plates) {
+      for (const orientation of orientations) {
+        const testPlate = new HorizontalPlateSolution(
+          plateSpec.width,
+          plateSpec.height,
+          trimLeft,
+          trimTop,
+          trimRight,
+          trimBottom,
+          kerf
+        );
+
+        for (const placedPiece of plate.placedPieces) {
+          testPlate.place({ ...placedPiece.piece });
+        }
+
+        if (testPlate.place({ ...orientation })) {
+          const waste = testPlate.totalArea - testPlate.usedArea;
+          if (waste < bestWaste) {
+            bestWaste = waste;
+            bestPlate = plate;
+            bestOrientation = orientation;
+          }
+        }
+      }
+    }
+
+    if (bestPlate && bestOrientation) {
+      bestPlate.place({ ...bestOrientation });
+      placed = true;
+    }
+
+    if (!placed) {
+      const newPlate = new HorizontalPlateSolution(
+        plateSpec.width,
+        plateSpec.height,
+        trimLeft,
+        trimTop,
+        trimRight,
+        trimBottom,
+        kerf
+      );
+
+      let placedInNew = false;
+      for (const orientation of orientations) {
+        if (newPlate.place({ ...orientation })) {
+          placedInNew = true;
+          break;
+        }
+      }
+
+      if (placedInNew) {
+        plates.push(newPlate);
+      } else {
+        remaining.push(piece);
+      }
+    }
+  }
+
+  return { plates, remaining };
+}
+
+function simulatedAnnealingBands(pieces, plateSpec, options = {}, iterations = 100) {
+  const { allowRotation = true } = options;
+  const strategies = ['height-desc', 'area-desc', 'width-desc', 'perimeter-desc'];
+
+  let bestInitialSolution = null;
+  let bestInitialEval = null;
+
+  for (const strategy of strategies) {
+    const sorted = sortPieces(pieces, strategy);
+    const solution = firstFitDecreasingBands(sorted, plateSpec, options);
+    const evaluation = evaluateSolution(solution.plates, options);
+
+    if (!bestInitialSolution || evaluation.score > (bestInitialEval?.score ?? -Infinity)) {
+      bestInitialSolution = solution;
+      bestInitialEval = evaluation;
+    }
+  }
+
+  let currentSolution = bestInitialSolution || firstFitDecreasingBands(pieces, plateSpec, options);
+  let currentEval = bestInitialEval || evaluateSolution(currentSolution.plates, options);
+  let bestSolution = currentSolution;
+  let bestEval = currentEval;
+
+  let temperature = 2000;
+  const coolingRate = 0.92;
+
+  for (let i = 0; i < iterations; i++) {
+    const shuffled = [...pieces];
+
+    const swaps = Math.floor(Math.random() * 8) + 2;
+    for (let j = 0; j < swaps; j++) {
+      const idx1 = Math.floor(Math.random() * shuffled.length);
+      const idx2 = Math.floor(Math.random() * shuffled.length);
+      [shuffled[idx1], shuffled[idx2]] = [shuffled[idx2], shuffled[idx1]];
+    }
+
+    if (allowRotation) {
+      const rotationCount = Math.floor(Math.random() * 4) + 1;
+      for (let j = 0; j < rotationCount; j++) {
+        const idx = Math.floor(Math.random() * shuffled.length);
+        const candidate = shuffled[idx];
+        shuffled[idx] = {
+          ...candidate,
+          width: candidate.height,
+          height: candidate.width,
+          rotated: !candidate.rotated
+        };
+      }
+    }
+
+    if (Math.random() < 0.35) {
+      shuffled.sort((a, b) => {
+        if (Math.abs(b.height - a.height) > EPSILON) {
+          return b.height - a.height;
+        }
+        const areaA = a.width * a.height;
+        const areaB = b.width * b.height;
+        return areaB - areaA;
+      });
+    }
+
+    const newSolution = firstFitDecreasingBands(shuffled, plateSpec, options);
+    const newEval = evaluateSolution(newSolution.plates, options);
+    const delta = newEval.score - currentEval.score;
+    const acceptProbability = delta > 0 ? 1 : Math.exp(delta / temperature);
+
+    if (Math.random() < acceptProbability) {
+      currentSolution = newSolution;
+      currentEval = newEval;
+      if (!bestEval || newEval.score > bestEval.score) {
+        bestSolution = newSolution;
+        bestEval = newEval;
+        console.log(`   🔥 Mejora franjas (iter ${i}): ${bestEval.plateCount} placas, ${bestEval.utilization.toFixed(2)}% util`);
+      }
+    }
+
+    temperature *= coolingRate;
+  }
+
+  return {
+    solution: bestSolution,
+    evaluation: bestEval
+  };
+}
+
+export function optimizeCutLayoutBands(pieces, plateSpec, options = {}) {
+  const {
+    algorithm = 'simulated-annealing',
+    iterations = 100
+  } = options;
+
+  console.log('🎯 Iniciando optimización avanzada (franjas horizontales)...');
+  console.log(`   Piezas: ${pieces.length}`);
+  console.log(`   Placa: ${plateSpec.width} × ${plateSpec.height} mm`);
+  console.log(`   Algoritmo: ${algorithm}`);
+
+  switch (algorithm) {
+    case 'ffd': {
+      const result = firstFitDecreasingBands(pieces, plateSpec, options);
+      return {
+        plates: result.plates,
+        remaining: result.remaining,
+        evaluation: evaluateSolution(result.plates, options)
+      };
+    }
+    case 'bfd': {
+      const result = bestFitDecreasingBands(pieces, plateSpec, options);
+      return {
+        plates: result.plates,
+        remaining: result.remaining,
+        evaluation: evaluateSolution(result.plates, options)
+      };
+    }
+    case 'simulated-annealing-horizontal':
+    case 'simulated-annealing': {
+      const saResult = simulatedAnnealingBands(pieces, plateSpec, options, iterations);
+      return {
+        plates: saResult.solution.plates,
+        remaining: saResult.solution.remaining,
+        evaluation: saResult.evaluation
+      };
+    }
+    default:
+      throw new Error(`Algoritmo desconocido (bandas): ${algorithm}`);
+  }
 }
