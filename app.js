@@ -207,6 +207,101 @@ let reuseComparisonResult = null;
 let reuseEvaluationInProgress = false;
 let reuseComparisonPromise = null;
 let reuseComparisonDetails = null;
+const optimizationBestCache = new Map();
+const bandOptimizationBestCache = new Map();
+
+function getOptimizationStats(result) {
+  if (!result || typeof result !== 'object') {
+    return {
+      plateCount: Number.POSITIVE_INFINITY,
+      remainingCount: Number.POSITIVE_INFINITY,
+      usedArea: 0,
+      wasteArea: Number.POSITIVE_INFINITY,
+      score: Number.NEGATIVE_INFINITY
+    };
+  }
+
+  const evaluation = result.evaluation || {};
+  const plates = Array.isArray(result.plates) ? result.plates : [];
+  const plateCount = Number.isFinite(evaluation.plateCount) ? evaluation.plateCount : plates.length;
+  const remainingCount = Array.isArray(result.remaining) ? result.remaining.length : Number.POSITIVE_INFINITY;
+
+  const usedArea = Number.isFinite(evaluation.usedArea)
+    ? evaluation.usedArea
+    : plates.reduce((sum, plate) => sum + (Number.isFinite(plate?.usedArea) ? Number(plate.usedArea) : 0), 0);
+
+  const wasteArea = Number.isFinite(evaluation.wasteArea)
+    ? evaluation.wasteArea
+    : plates.reduce((sum, plate) => {
+        const totalArea = Number.isFinite(plate?.totalArea)
+          ? Number(plate.totalArea)
+          : (Number(plate?.plateWidth) || 0) * (Number(plate?.plateHeight) || 0);
+        const used = Number.isFinite(plate?.usedArea) ? Number(plate.usedArea) : 0;
+        return sum + Math.max(0, totalArea - used);
+      }, 0);
+
+  const score = Number.isFinite(evaluation.score)
+    ? evaluation.score
+    : usedArea - (plateCount * 10000) - wasteArea;
+
+  return { plateCount, remainingCount, usedArea, wasteArea, score };
+}
+
+function selectBetterOptimizationResult(candidate, current) {
+  if (!candidate) {
+    return current || null;
+  }
+  if (!current) {
+    return candidate;
+  }
+
+  const cand = getOptimizationStats(candidate);
+  const curr = getOptimizationStats(current);
+
+  if (cand.plateCount < curr.plateCount) return candidate;
+  if (cand.plateCount > curr.plateCount) return current;
+
+  if (cand.remainingCount < curr.remainingCount) return candidate;
+  if (cand.remainingCount > curr.remainingCount) return current;
+
+  if (cand.usedArea > curr.usedArea + 1e-6) return candidate;
+  if (cand.usedArea < curr.usedArea - 1e-6) return current;
+
+  if (cand.wasteArea < curr.wasteArea - 1e-6) return candidate;
+  if (cand.wasteArea > curr.wasteArea + 1e-6) return current;
+
+  if (cand.score > curr.score) return candidate;
+  if (cand.score < curr.score) return current;
+
+  return current;
+}
+
+function runSolverWithRetries({ cacheKey = null, cacheMap = null, attempts = 1, solver }) {
+  let best = cacheKey && cacheMap ? cacheMap.get(cacheKey) || null : null;
+  const totalAttempts = Math.max(1, attempts);
+
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
+    let candidate = null;
+    try {
+      candidate = solver(attempt, best);
+    } catch (error) {
+      console.warn('Optimización: intento fallido', { attempt, error });
+      continue;
+    }
+
+    if (!candidate) {
+      continue;
+    }
+
+    best = selectBetterOptimizationResult(candidate, best);
+  }
+
+  if (cacheKey && cacheMap && best) {
+    cacheMap.set(cacheKey, best);
+  }
+
+  return best;
+}
 
 // Estado CNC derivado del plano actualmente mostrado
 let currentDisplayedPlacementsByPlate = [];
@@ -633,6 +728,8 @@ function invalidateSolverCache() {
     solverCache.clear();
     clearPersistentCache();
   }
+  optimizationBestCache.clear();
+  bandOptimizationBestCache.clear();
   reuseComparisonHash = null;
   reuseComparisonResult = null;
   reuseEvaluationInProgress = false;
@@ -4875,33 +4972,32 @@ async function renderWithAdvancedOptimizer() {
         rotationMixPenalty: options.rotationMixPenalty
       }
     });
-    
-    // Si los datos no han cambiado y ya tenemos una solución, reutilizarla
-    if (lastOptimizationHash === dataHash && lastOptimizationResult) {
-      console.log('✅ Reutilizando optimización anterior (sin cambios en datos)');
-      const newPiecesMap = new Map(pieces.map(p => [p.id, p]));
-      const { optimizeCutLayout, generateReport } = await import('./advanced-optimizer.js');
-      const report = generateReport(lastOptimizationResult);
-      updateSummaryWithAdvancedReport(report);
-      renderAdvancedSolution(lastOptimizationResult, plateSpec, newPiecesMap);
-      return;
-    }
-    
-    // Los datos cambiaron, ejecutar nueva optimización
-    console.log('🔄 Ejecutando nueva optimización (datos modificados)');
+
+    const cacheKey = `column:${dataHash}`;
+    const attemptCount = options.algorithm === 'simulated-annealing'
+      ? (optimizationBestCache.has(cacheKey) ? 2 : 4)
+      : 1;
+
     const { optimizeCutLayout, generateReport } = await import('./advanced-optimizer.js');
-    const result = optimizeCutLayout(pieces, plateSpec, options);
-    const report = generateReport(result);
-    
-    // Guardar en cache
+
+    const bestResult = runSolverWithRetries({
+      cacheKey,
+      cacheMap: optimizationBestCache,
+      attempts: attemptCount,
+      solver: () => optimizeCutLayout(pieces.map(piece => ({ ...piece })), plateSpec, options)
+    });
+
+    if (!bestResult) {
+      throw new Error('No se pudo obtener una solución válida');
+    }
+
     lastOptimizationHash = dataHash;
-    lastOptimizationResult = result;
-    
-    // Actualizar resumen con datos del optimizador avanzado
+    lastOptimizationResult = bestResult;
+
+    const newPiecesMap = new Map(pieces.map(p => [p.id, p]));
+    const report = generateReport(bestResult);
     updateSummaryWithAdvancedReport(report);
-    
-    // Renderizar visualización
-    renderAdvancedSolution(result, plateSpec);
+    renderAdvancedSolution(bestResult, plateSpec, newPiecesMap);
     
   } catch (error) {
     console.error('Error en renderWithAdvancedOptimizer:', error);
@@ -4996,26 +5092,31 @@ async function renderWithAdvancedOptimizerBands() {
       }
     });
 
-    if (lastBandOptimizationHash === dataHash && lastBandOptimizationResult) {
-      console.log('✅ Reutilizando optimización en franjas (sin cambios en datos)');
-      const newPiecesMap = new Map(pieces.map((p) => [p.id, p]));
-      const { optimizeCutLayoutBands, generateReport } = await import('./advanced-optimizer.js');
-      const report = generateReport(lastBandOptimizationResult);
-      updateSummaryWithAdvancedReport(report);
-      renderAdvancedSolution(lastBandOptimizationResult, plateSpec, newPiecesMap);
-      return;
+    const cacheKey = `band:${dataHash}`;
+    const attemptCount = options.algorithm === 'simulated-annealing'
+      ? (bandOptimizationBestCache.has(cacheKey) ? 2 : 4)
+      : 1;
+
+    const { optimizeCutLayoutBands, generateReport } = await import('./advanced-optimizer.js');
+
+    const bestResult = runSolverWithRetries({
+      cacheKey,
+      cacheMap: bandOptimizationBestCache,
+      attempts: attemptCount,
+      solver: () => optimizeCutLayoutBands(pieces.map(piece => ({ ...piece })), plateSpec, options)
+    });
+
+    if (!bestResult) {
+      throw new Error('No se pudo obtener una solución válida (bandas)');
     }
 
-    console.log('🔄 Ejecutando optimización en franjas (datos modificados)');
-    const { optimizeCutLayoutBands, generateReport } = await import('./advanced-optimizer.js');
-    const result = optimizeCutLayoutBands(pieces, plateSpec, options);
-    const report = generateReport(result);
-
     lastBandOptimizationHash = dataHash;
-    lastBandOptimizationResult = result;
+    lastBandOptimizationResult = bestResult;
 
+    const newPiecesMap = new Map(pieces.map((p) => [p.id, p]));
+    const report = generateReport(bestResult);
     updateSummaryWithAdvancedReport(report);
-    renderAdvancedSolution(result, plateSpec);
+    renderAdvancedSolution(bestResult, plateSpec, newPiecesMap);
   } catch (error) {
     console.error('Error en renderWithAdvancedOptimizerBands:', error);
     if (sheetCanvasEl) {
@@ -5261,13 +5362,7 @@ async function renderCombinedAdvancedLayout() {
 
       const subsetPieceIds = Array.from(pieceIds);
 
-      const subsetPiecesColumn = subsetPieceIds.map((id) => {
-        const original = piecesMap.get(id);
-        if (!original) return null;
-        return { ...original };
-      }).filter(Boolean);
-
-      const subsetPiecesBand = subsetPieceIds.map((id) => {
+      const subsetBasePieces = subsetPieceIds.map((id) => {
         const original = piecesMap.get(id);
         if (!original) return null;
         return { ...original };
@@ -5289,9 +5384,7 @@ async function renderCombinedAdvancedLayout() {
         trimBottom
       };
 
-      if (!subsetPiecesColumn.length || !subsetPiecesBand.length ||
-          subsetPiecesColumn.length !== subsetPieceIds.length ||
-          subsetPiecesBand.length !== subsetPieceIds.length) {
+      if (!subsetBasePieces.length || subsetBasePieces.length !== subsetPieceIds.length) {
         combinedPlates.push(plate);
         continue;
       }
@@ -5304,17 +5397,51 @@ async function renderCombinedAdvancedLayout() {
         trimBottom
       };
 
-      let columnResult = null;
-      let bandResult = null;
+      const subsetSignaturePieces = subsetBasePieces
+        .map((piece) => ({ id: String(piece.id), w: Number(piece.width), h: Number(piece.height) }))
+        .sort((a, b) => a.id.localeCompare(b.id));
 
+      const subsetHashPayload = JSON.stringify({
+        plate: { width: plateWidth, height: plateHeight, trimLeft, trimTop, trimRight, trimBottom },
+        pieces: subsetSignaturePieces,
+        options: {
+          kerf: plateOptions.kerf,
+          allowRotation: plateOptions.allowRotation,
+          rotationPenalty: plateOptions.rotationPenalty,
+          rotationMixPenalty: plateOptions.rotationMixPenalty
+        }
+      });
+
+      const subsetColumnKey = `column-sub:${subsetHashPayload}`;
+      const subsetBandKey = `band-sub:${subsetHashPayload}`;
+
+      const subsetColumnAttempts = plateOptions.algorithm === 'simulated-annealing'
+        ? (optimizationBestCache.has(subsetColumnKey) ? 2 : 4)
+        : 1;
+      const subsetBandAttempts = plateOptions.algorithm === 'simulated-annealing'
+        ? (bandOptimizationBestCache.has(subsetBandKey) ? 2 : 4)
+        : 1;
+
+      let columnResult = null;
       try {
-        columnResult = optimizeCutLayout(subsetPiecesColumn, { width: plateWidth, height: plateHeight }, plateOptions);
+        columnResult = runSolverWithRetries({
+          cacheKey: subsetColumnKey,
+          cacheMap: optimizationBestCache,
+          attempts: subsetColumnAttempts,
+          solver: () => optimizeCutLayout(subsetBasePieces.map(piece => ({ ...piece })), { width: plateWidth, height: plateHeight }, plateOptions)
+        });
       } catch (err) {
         console.warn('No se pudo recalcular placa (columnas):', err);
       }
 
+      let bandResult = null;
       try {
-        bandResult = optimizeCutLayoutBands(subsetPiecesBand, { width: plateWidth, height: plateHeight }, { ...plateOptions, orientationPreference: 'horizontal-bands' });
+        bandResult = runSolverWithRetries({
+          cacheKey: subsetBandKey,
+          cacheMap: bandOptimizationBestCache,
+          attempts: subsetBandAttempts,
+          solver: () => optimizeCutLayoutBands(subsetBasePieces.map(piece => ({ ...piece })), { width: plateWidth, height: plateHeight }, { ...plateOptions, orientationPreference: 'horizontal-bands' })
+        });
       } catch (err) {
         console.warn('No se pudo recalcular placa (bandas):', err);
       }
@@ -6238,24 +6365,42 @@ async function computeReuseComparisonDetails() {
       const optimizerModule = await import('./advanced-optimizer.js');
       const { optimizeCutLayout, optimizeCutLayoutBands } = optimizerModule;
 
-      let horizontalResult = null;
-      if (lastOptimizationHash === columnHash && lastOptimizationResult) {
-        horizontalResult = lastOptimizationResult;
-      } else {
-        horizontalResult = optimizeCutLayout(pieces, { width: plateWidth, height: plateHeight }, baseOptions);
-        lastOptimizationHash = columnHash;
-        lastOptimizationResult = horizontalResult;
+      const columnCacheKey = `column:${columnHash}`;
+      const bandCacheKey = `band:${bandHash}`;
+      const columnAttempts = baseOptions.algorithm === 'simulated-annealing'
+        ? (optimizationBestCache.has(columnCacheKey) ? 2 : 4)
+        : 1;
+      const bandOptions = { ...baseOptions, orientationPreference: 'horizontal-bands' };
+      const bandAttempts = bandOptions.algorithm === 'simulated-annealing'
+        ? (bandOptimizationBestCache.has(bandCacheKey) ? 2 : 4)
+        : 1;
+
+      const horizontalResult = runSolverWithRetries({
+        cacheKey: columnCacheKey,
+        cacheMap: optimizationBestCache,
+        attempts: columnAttempts,
+        solver: () => optimizeCutLayout(pieces.map(piece => ({ ...piece })), { width: plateWidth, height: plateHeight }, baseOptions)
+      });
+
+      if (!horizontalResult) {
+        throw new Error('No se pudo obtener una solución horizontal válida');
       }
 
-      let verticalResult = null;
-      if (lastBandOptimizationHash === bandHash && lastBandOptimizationResult) {
-        verticalResult = lastBandOptimizationResult;
-      } else {
-        const bandOptions = { ...baseOptions, orientationPreference: 'horizontal-bands' };
-        verticalResult = optimizeCutLayoutBands(pieces, { width: plateWidth, height: plateHeight }, bandOptions);
-        lastBandOptimizationHash = bandHash;
-        lastBandOptimizationResult = verticalResult;
+      const verticalResult = runSolverWithRetries({
+        cacheKey: bandCacheKey,
+        cacheMap: bandOptimizationBestCache,
+        attempts: bandAttempts,
+        solver: () => optimizeCutLayoutBands(pieces.map(piece => ({ ...piece })), { width: plateWidth, height: plateHeight }, bandOptions)
+      });
+
+      if (!verticalResult) {
+        throw new Error('No se pudo obtener una solución vertical válida');
       }
+
+      lastOptimizationHash = columnHash;
+      lastOptimizationResult = horizontalResult;
+      lastBandOptimizationHash = bandHash;
+      lastBandOptimizationResult = verticalResult;
 
       const verticalMetrics = evaluateLayoutReusePotential(verticalResult, plateSpec);
       const horizontalMetrics = evaluateLayoutReusePotential(horizontalResult, plateSpec);
