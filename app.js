@@ -55,14 +55,12 @@ function collectRigheEntriesFromPlan(plan) {
             const ancho_u = uvPair.ancho_u;
             const cortes_v = Array.isArray(uvPair.cortes_v) ? uvPair.cortes_v : [];
 
-            // Generar U solo si hay un ancho válido
+            // Generar pares U/V por cada corte de sobrante registrado
             if (Number.isFinite(ancho_u) && ancho_u > 0) {
+              cortes_v.forEach(corteV => {
                 entries.push({ command: 'U', measure: ancho_u, quantity: 1 });
-                
-                // Generar todos los V asociados
-                cortes_v.forEach(corteV => {
-                    entries.push({ command: 'V', measure: corteV, quantity: 1 });
-                });
+                entries.push({ command: 'V', measure: corteV, quantity: 1 });
+              });
             }
         });
       }
@@ -9517,40 +9515,75 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           if (potentialSobranteFranja.isSobrante) continue;
           
           const firstPieceY = potentialSobranteFranja.placements[0]?.y;
+          const candidateTopY = Number(firstPieceY);
+          const candidateTotalHeight = potentialSobranteFranja.placements.reduce((sum, placement) => {
+            const h = Number(placement?.height);
+            return Number.isFinite(h) && h > 0 ? sum + h : sum;
+          }, 0);
+          const candidateBottomY = Number.isFinite(candidateTopY) ? candidateTopY + candidateTotalHeight : NaN;
+          const mainTopY = franja.placements[0]?.y ?? 0;
+          const mainBottomY = currentMainFranjaBottomY;
           
           // 3. Verificar estructura V* (alto uniforme)
           potentialSobranteFranja.placements.sort((a, b) => a.y - b.y);
-          const potentialAnchoU = potentialSobranteFranja.placements[0]?.height;
-          const uniformHeight = potentialSobranteFranja.placements.every(p => numbersAlmostEqual(p.height, potentialAnchoU, WIDTH_TOLERANCE));
-          const potentialCortesV = potentialSobranteFranja.placements.map(p => p.width);
+            const potentialUVGroups = [];
+            let groupsValid = true;
 
-          if (!uniformHeight || potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
-          //if (potentialAnchoU <= 0 || !potentialCortesV.every(cv => Number.isFinite(cv) && cv > 0)) {
+            for (const placement of potentialSobranteFranja.placements) {
+              const candidateHeight = Number(placement?.height);
+              const candidateWidth = Number(placement?.width);
+
+              if (!Number.isFinite(candidateHeight) || candidateHeight <= 0 ||
+                !Number.isFinite(candidateWidth) || candidateWidth <= 0) {
+                groupsValid = false;
+                break;
+              }
+
+              let group = null;
+              for (let gIdx = 0; gIdx < potentialUVGroups.length; gIdx++) {
+                if (numbersAlmostEqual(potentialUVGroups[gIdx].ancho_u, candidateHeight, WIDTH_TOLERANCE)) {
+                  group = potentialUVGroups[gIdx];
+                  break;
+                }
+              }
+
+              if (!group) {
+                group = { ancho_u: candidateHeight, cortes_v: [] };
+                potentialUVGroups.push(group);
+              }
+
+              group.cortes_v.push(candidateWidth);
+            }
+
+            if (!groupsValid || !potentialUVGroups.length) {
               break; 
-          }
+            }
           
           const isFirstSobrante = (combinedUVPairs.length === 0);
           
 
           if (isFirstSobrante) {
               // --- LÓGICA PARA EL *PRIMER* SOBRANTE ---
-              const similarLargo = numbersAlmostEqual(franja.largo, potentialSobranteFranja.largo, WIDTH_TOLERANCE);
-              const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
-              const expectedY = lastProcessedBottomY + kerfValue;
-              const startsBelow = firstPieceY !== undefined &&
+                const similarLargo = numbersAlmostEqual(franja.largo, potentialSobranteFranja.largo, WIDTH_TOLERANCE);
+                const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
+                const expectedY = lastProcessedBottomY + kerfValue;
+                const startsBelow = firstPieceY !== undefined &&
                   (firstPieceY >= lastProcessedBottomY - kerfValue && firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
+                const overlapsCurrentFranja = Number.isFinite(candidateTopY) && Number.isFinite(candidateBottomY) &&
+                  candidateTopY <= mainBottomY + POSITION_TOLERANCE &&
+                  candidateBottomY >= mainTopY - POSITION_TOLERANCE;
 
               console.log(`[DEBUG_RIGHE]    - Condición: !similarLargo=${!similarLargo}, similarX=${similarX}, startsBelow=${startsBelow}`);
 
-              if (!similarLargo && similarX && startsBelow) {
+                if (!similarLargo && similarX && (startsBelow || overlapsCurrentFranja)) {
                   // Es el primer sobrante V* válido
                   firstSobranteY = firstPieceY; // Se usa para la Opción H subsecuente
                   
                   // 💥 ALMACENAR COMO PAR U/V
-                  potentialCortesV.forEach(corteV => {
+                  potentialUVGroups.forEach(group => {
                     combinedUVPairs.push({
-                      ancho_u: potentialAnchoU,
-                      cortes_v: [corteV]
+                      ancho_u: group.ancho_u,
+                      cortes_v: group.cortes_v.slice()
                     });
                   });
                   potentialSobranteFranja.isSobrante = true; 
@@ -9566,14 +9599,6 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
           } else {
               // --- LÓGICA PARA SOBRANTES *SUBSECUENTES* ---
               
-              const lastUVPair = combinedUVPairs[combinedUVPairs.length - 1];
-              // El ancho U del candidato
-              const candidateAnchoU = potentialAnchoU;
-
-              // 💥 NUEVA REGLA: Si el ancho U del candidato es el mismo que el último par agregado,
-              // FUSIONAR los cortes V en el último par, SIN crear un nuevo U.
-              const isSameAnchoU = numbersAlmostEqual(candidateAnchoU, lastUVPair.ancho_u, WIDTH_TOLERANCE);
-
               // OPCIÓN 1: Apilado Verticalmente (RELAJADO)
               const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
               const expectedY = lastProcessedBottomY + kerfValue;
@@ -9586,18 +9611,24 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
 
               if (similarX && startsBelow_Vertical_Relaxed || startsAtSameY_Horizontal) {
                   
-                  // Si el ancho U es el mismo, FUSIONAR los cortes V.
-                  if (isSameAnchoU) {
-                      lastUVPair.cortes_v.push(...potentialCortesV); // Añade los V al último par U
-                  } else {
-                      // Si el ancho U es diferente, debe empezar una nueva tira U (TU CASO ANTERIOR)
-                      potentialCortesV.forEach(corteV => {
+                    potentialUVGroups.forEach(group => {
+                      let matchedPair = null;
+                      for (let idx = combinedUVPairs.length - 1; idx >= 0; idx--) {
+                        if (numbersAlmostEqual(combinedUVPairs[idx].ancho_u, group.ancho_u, WIDTH_TOLERANCE)) {
+                          matchedPair = combinedUVPairs[idx];
+                          break;
+                        }
+                      }
+
+                      if (matchedPair) {
+                        matchedPair.cortes_v.push(...group.cortes_v);
+                      } else {
                         combinedUVPairs.push({
-                          ancho_u: potentialAnchoU,
-                          cortes_v: [corteV]
+                          ancho_u: group.ancho_u,
+                          cortes_v: group.cortes_v.slice()
                         });
-                      });
-                  }
+                      }
+                    });
                   
                   potentialSobranteFranja.isSobrante = true;
                   
