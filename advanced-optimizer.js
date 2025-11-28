@@ -139,6 +139,7 @@ class PlateSolution {
     this.trimLeft = trimLeft;
     this.trimTop = trimTop;
     this.kerf = kerf;
+    this.layoutStrategy = 'vertical';
     
     this.usableWidth = plateWidth - trimLeft;
     this.usableHeight = plateHeight - trimTop;
@@ -800,6 +801,7 @@ class HorizontalPlateSolution {
     this.trimRight = trimRight;
     this.trimBottom = trimBottom;
     this.kerf = kerf;
+    this.layoutStrategy = 'horizontal';
 
     this.usableWidth = Math.max(0, plateWidth - trimLeft - trimRight);
     this.usableHeight = Math.max(0, plateHeight - trimTop - trimBottom);

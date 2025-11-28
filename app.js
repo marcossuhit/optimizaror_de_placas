@@ -5465,6 +5465,18 @@ async function renderCombinedAdvancedLayout() {
         ? chosen.result.plates[0]
         : plate;
 
+      if (!chosenPlate.layoutStrategy) {
+        if (chosen.orientation === 'column') {
+          chosenPlate.layoutStrategy = 'vertical';
+        } else if (chosen.orientation === 'band') {
+          chosenPlate.layoutStrategy = 'horizontal';
+        } else if (plate?.layoutStrategy) {
+          chosenPlate.layoutStrategy = plate.layoutStrategy;
+        } else {
+          chosenPlate.layoutStrategy = 'unknown';
+        }
+      }
+
       combinedPlates.push(chosenPlate);
 
       if (Array.isArray(chosen.result?.remaining) && chosen.result.remaining.length) {
@@ -5570,7 +5582,8 @@ function renderAdvancedSolution(optimizationResult, plateSpec, piecesMap = null)
       trimTop: Number.isFinite(Number(plate?.trimTop)) ? Number(plate.trimTop) : 0,
       trimRight: 0,
       trimBottom: 0,
-      material: currentMaterialName || 'Material'
+      material: currentMaterialName || 'Material',
+      layoutStrategy: typeof plate?.layoutStrategy === 'string' ? plate.layoutStrategy : 'unknown'
     };
     
     const VIEW_W = 1000;
@@ -9428,263 +9441,313 @@ function crear_plan_vertical(plate, options) {
  * 2. Mantiene la lógica de prioridad (Horizontal primero, luego Vertical).
  */
 function buildCutPlanForPlate(plate, options = {}) {
-  // PRIMERO intentar el patrón horizontal (X/U/V)
-  const horizontalPlan = buildHorizontalCutPlanFromPlate(plate, options);
-  if (horizontalPlan) {
-    return horizontalPlan;
+  const normalizeStrategy = (value) => {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.toLowerCase();
+    if (normalized === 'column') return 'vertical';
+    if (normalized === 'band') return 'horizontal';
+    if (normalized === 'horizontal' || normalized === 'vertical') return normalized;
+    return undefined;
+  };
+
+  const forcedStrategy = normalizeStrategy(options.strategy) || normalizeStrategy(plate?.layoutStrategy);
+  const attempts = forcedStrategy === 'vertical'
+    ? ['vertical', 'horizontal']
+    : forcedStrategy === 'horizontal'
+      ? ['horizontal', 'vertical']
+      : ['horizontal', 'vertical'];
+
+  for (const attempt of attempts) {
+    if (attempt === 'horizontal') {
+      const horizontalPlan = buildHorizontalCutPlanFromPlate(plate, options);
+      if (horizontalPlan) {
+        console.log('[CNC] Estrategia seleccionada para placa:', 'horizontal');
+        return horizontalPlan;
+      }
+    } else {
+      const verticalPlan = buildVerticalCutPlanFromPlate(plate, options);
+      if (verticalPlan) {
+        console.log('[CNC] Estrategia seleccionada para placa:', 'vertical');
+        return verticalPlan;
+      }
+    }
   }
 
-  // Si no se puede, intentar el vertical (Y/X)
-  const verticalPlan = buildVerticalCutPlanFromPlate(plate, options);
-  if (verticalPlan) {
-    return verticalPlan;
-  }
-
-  // Si ninguno de los patrones se pudo aplicar, fallar.
+  console.warn('[CNC] No se pudo construir un plan de corte con las estrategias disponibles.');
   return null;
 }
 
-function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = null } = {}) {
-  if (!plate || typeof plate.getPlacedPiecesWithCoords !== 'function') return null;
-  const placements = plate.getPlacedPiecesWithCoords();
-  if (!Array.isArray(placements) || placements.length === 0) return null;
+const HORIZONTAL_POSITION_TOLERANCE = 0.05;
+const HORIZONTAL_WIDTH_TOLERANCE = 0.05;
+const HORIZONTAL_DEFAULT_KERF = 5;
 
-  // La lógica para RU se ha eliminado para enfocarse en X -> U
-  const userRefilo = Number(uiTrim.mm) || 0; 
+function horizontalNumbersAlmostEqual(a, b, tolerance = HORIZONTAL_POSITION_TOLERANCE) {
+  return Math.abs((Number(a) || 0) - (Number(b) || 0)) <= tolerance;
+}
 
-  // --- Helper Functions and Constants ---
-  function numbersAlmostEqual(a, b, tolerance = 0.01) { return Math.abs(Number(a) - Number(b)) < tolerance; }
-  const WIDTH_TOLERANCE = 0.05;
-  const POSITION_TOLERANCE = 0.05;
-  const kerfValue = 5; 
-  const franjasMap = new Map();
+function horizontalMergeUVGroup(target, group, tolerance = HORIZONTAL_WIDTH_TOLERANCE) {
+  for (const existing of target) {
+    if (horizontalNumbersAlmostEqual(existing.ancho_u, group.ancho_u, tolerance)) {
+      existing.cortes_v.push(...group.cortes_v);
+      return;
+    }
+  }
+  target.push({
+    ancho_u: group.ancho_u,
+    cortes_v: group.cortes_v.slice()
+  });
+}
 
-  // 1. Group pieces into candidate "Franjas" (by 'x' and 'width')
-  for (const placement of placements) {
-      const largo = Number(placement?.width); const alto = Number(placement?.height); const x = Number(placement?.x); const y = Number(placement?.y);
-      if (!Number.isFinite(largo) || largo <= 0 || !Number.isFinite(alto) || alto <= 0 || !Number.isFinite(x) || !Number.isFinite(y)) { continue; }
-      
-      let key = Array.from(franjasMap.keys()).find(k => 
-          numbersAlmostEqual(k.largo, largo, WIDTH_TOLERANCE) && 
-          numbersAlmostEqual(k.x, x, POSITION_TOLERANCE)
-      );
-      if (key === undefined) { 
-          key = { largo: largo, x: x }; 
-          franjasMap.set(key, { largo: largo, x: x, placements: [], isSobrante: false }); 
-      }
-      franjasMap.get(key).placements.push({ x, y, width: largo, height: alto });
+function horizontalExtractUVGroups(strip, tolerance = HORIZONTAL_WIDTH_TOLERANCE) {
+  if (!strip || !Array.isArray(strip.placements) || !strip.placements.length) {
+    return null;
   }
 
-  if (franjasMap.size === 0) return null;
+  const groups = [];
+  for (const placement of strip.placements) {
+    const candidateHeight = Number(placement?.height);
+    const candidateWidth = Number(placement?.width);
 
-  // 2. Sort candidate franjas by 'x' then 'y' of first piece
-  const sortedFranjas = Array.from(franjasMap.values()).sort((a, b) => {
-      const firstPieceAY = a.placements[0]?.y ?? Infinity; 
-      const firstPieceBY = b.placements[0]?.y ?? Infinity;
-      return a.x - b.x || firstPieceAY - firstPieceBY;
+    if (!Number.isFinite(candidateHeight) || candidateHeight <= 0 ||
+        !Number.isFinite(candidateWidth) || candidateWidth <= 0) {
+      return null;
+    }
+
+    let group = null;
+    for (const existing of groups) {
+      if (horizontalNumbersAlmostEqual(existing.ancho_u, candidateHeight, tolerance)) {
+        group = existing;
+        break;
+      }
+    }
+
+    if (!group) {
+      group = { ancho_u: candidateHeight, cortes_v: [] };
+      groups.push(group);
+    }
+
+    group.cortes_v.push(candidateWidth);
+  }
+
+  return groups.length ? groups : null;
+}
+
+function collectHorizontalStrips(placements) {
+  const stripMap = new Map();
+  const quantize = (value) => Math.round(((Number(value) || 0)) / HORIZONTAL_POSITION_TOLERANCE);
+
+  for (const segment of placements) {
+    const left = segment.x;
+    const right = segment.x + segment.width;
+    const key = `${quantize(left)}|${quantize(right)}`;
+
+    let bucket = stripMap.get(key);
+    if (!bucket) {
+      bucket = [];
+      stripMap.set(key, bucket);
+    }
+
+    let strip = null;
+    for (const candidate of bucket) {
+      if (horizontalNumbersAlmostEqual(candidate.left, left, HORIZONTAL_POSITION_TOLERANCE) &&
+          horizontalNumbersAlmostEqual(candidate.right, right, HORIZONTAL_POSITION_TOLERANCE)) {
+        strip = candidate;
+        break;
+      }
+    }
+
+    if (!strip) {
+      strip = {
+        left,
+        right,
+        width: segment.width,
+        placements: [],
+        isSobrante: false,
+        sobrante: null,
+        topY: 0,
+        bottomY: 0,
+        largo: segment.width
+      };
+      bucket.push(strip);
+    }
+
+    strip.placements.push({
+      x: segment.x,
+      y: segment.y,
+      width: segment.width,
+      height: segment.height
+    });
+  }
+
+  const strips = [];
+  stripMap.forEach(list => {
+    strips.push(...list);
   });
 
-  const finalPhases = [];
+  strips.forEach((strip) => {
+    strip.placements.sort((a, b) => a.y - b.y);
+    strip.topY = strip.placements[0]?.y ?? 0;
+    const lastPlacement = strip.placements[strip.placements.length - 1];
+    strip.bottomY = lastPlacement ? lastPlacement.y + lastPlacement.height : strip.topY;
+    strip.width = strip.placements[0]?.width ?? strip.width;
+    strip.largo = strip.width;
+    strip.sobrante = null;
+    strip.isSobrante = false;
+  });
 
-  // 3. Create final Phases with CORRECCIÓN de Sobrante
-  for (let i = 0; i < sortedFranjas.length; i++) {
-      const franja = sortedFranjas[i];
-      
-      // CRÍTICO: Si ya fue marcado como sobrante de una fase anterior, la saltamos.
-      if (franja.isSobrante) continue; 
+  strips.sort((a, b) => {
+    const topA = Number.isFinite(a.topY) ? a.topY : 0;
+    const topB = Number.isFinite(b.topY) ? b.topY : 0;
+    return a.left - b.left || topA - topB;
+  });
 
-      franja.placements.sort((a, b) => a.y - b.y);
-      const cortesU = franja.placements.map(p => p.height);
-      let currentMainFranjaBottomY = 0;
-      if (franja.placements.length > 0) {
-          currentMainFranjaBottomY = franja.placements[franja.placements.length - 1].y + franja.placements[franja.placements.length - 1].height;
-      } else {
+  return strips;
+}
+
+function detectHorizontalSobrantes(strips, { widthTolerance = HORIZONTAL_WIDTH_TOLERANCE, positionTolerance = HORIZONTAL_POSITION_TOLERANCE, kerfValue = HORIZONTAL_DEFAULT_KERF } = {}) {
+  if (!Array.isArray(strips) || !strips.length) {
+    return;
+  }
+
+  for (let i = 0; i < strips.length; i++) {
+    const baseStrip = strips[i];
+    if (baseStrip.isSobrante || !baseStrip.placements.length) continue;
+
+    const combinedUVPairs = [];
+    let firstSobranteY = -1;
+    let lastProcessedBottomY = baseStrip.bottomY;
+
+    for (let j = i + 1; j < strips.length; j++) {
+      const candidateStrip = strips[j];
+      if (candidateStrip.isSobrante || !candidateStrip.placements.length) continue;
+
+      const uvGroups = horizontalExtractUVGroups(candidateStrip, widthTolerance);
+      if (!uvGroups || !uvGroups.length) {
+        break;
+      }
+
+      const candidateTopY = candidateStrip.topY;
+      const candidateBottomY = candidateStrip.bottomY;
+
+      const similarWidth = horizontalNumbersAlmostEqual(baseStrip.width, candidateStrip.width, widthTolerance);
+      const alignedX = horizontalNumbersAlmostEqual(baseStrip.left, candidateStrip.left, positionTolerance);
+      const expectedY = lastProcessedBottomY + kerfValue;
+      const startsBelow = candidateTopY >= lastProcessedBottomY - kerfValue &&
+                          candidateTopY <= expectedY + kerfValue + positionTolerance;
+      const overlapsCurrent = candidateTopY <= baseStrip.bottomY + positionTolerance &&
+                              candidateBottomY >= baseStrip.topY - positionTolerance;
+
+      if (combinedUVPairs.length === 0) {
+        if (!similarWidth && alignedX && (startsBelow || overlapsCurrent)) {
+          firstSobranteY = candidateTopY;
+          uvGroups.forEach(group => {
+            combinedUVPairs.push({
+              ancho_u: group.ancho_u,
+              cortes_v: group.cortes_v.slice()
+            });
+          });
+          candidateStrip.isSobrante = true;
+          lastProcessedBottomY = candidateStrip.bottomY;
           continue;
+        }
+        break;
       }
 
-      let sobranteData = null;
-      let firstSobranteY = -1; 
-      // 💥 NUEVA ESTRUCTURA: Almacenará [{ ancho_u: 234, cortes_v: [390] }, { ancho_u: 130, cortes_v: [502] }]
-      const combinedUVPairs = []; 
-      let lastProcessedBottomY = currentMainFranjaBottomY; 
-      
-
-      // --- BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
-      for (let j = i + 1; j < sortedFranjas.length; j++) {
-          const potentialSobranteFranja = sortedFranjas[j];
-          if (potentialSobranteFranja.isSobrante) continue;
-          
-          const firstPieceY = potentialSobranteFranja.placements[0]?.y;
-          const candidateTopY = Number(firstPieceY);
-          const candidateTotalHeight = potentialSobranteFranja.placements.reduce((sum, placement) => {
-            const h = Number(placement?.height);
-            return Number.isFinite(h) && h > 0 ? sum + h : sum;
-          }, 0);
-          const candidateBottomY = Number.isFinite(candidateTopY) ? candidateTopY + candidateTotalHeight : NaN;
-          const mainTopY = franja.placements[0]?.y ?? 0;
-          const mainBottomY = currentMainFranjaBottomY;
-          
-          // 3. Verificar estructura V* (alto uniforme)
-          potentialSobranteFranja.placements.sort((a, b) => a.y - b.y);
-            const potentialUVGroups = [];
-            let groupsValid = true;
-
-            for (const placement of potentialSobranteFranja.placements) {
-              const candidateHeight = Number(placement?.height);
-              const candidateWidth = Number(placement?.width);
-
-              if (!Number.isFinite(candidateHeight) || candidateHeight <= 0 ||
-                !Number.isFinite(candidateWidth) || candidateWidth <= 0) {
-                groupsValid = false;
-                break;
-              }
-
-              let group = null;
-              for (let gIdx = 0; gIdx < potentialUVGroups.length; gIdx++) {
-                if (numbersAlmostEqual(potentialUVGroups[gIdx].ancho_u, candidateHeight, WIDTH_TOLERANCE)) {
-                  group = potentialUVGroups[gIdx];
-                  break;
-                }
-              }
-
-              if (!group) {
-                group = { ancho_u: candidateHeight, cortes_v: [] };
-                potentialUVGroups.push(group);
-              }
-
-              group.cortes_v.push(candidateWidth);
-            }
-
-            if (!groupsValid || !potentialUVGroups.length) {
-              break; 
-            }
-          
-          const isFirstSobrante = (combinedUVPairs.length === 0);
-          
-
-          if (isFirstSobrante) {
-              // --- LÓGICA PARA EL *PRIMER* SOBRANTE ---
-                const similarLargo = numbersAlmostEqual(franja.largo, potentialSobranteFranja.largo, WIDTH_TOLERANCE);
-                const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
-                const expectedY = lastProcessedBottomY + kerfValue;
-                const startsBelow = firstPieceY !== undefined &&
-                  (firstPieceY >= lastProcessedBottomY - kerfValue && firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
-                const overlapsCurrentFranja = Number.isFinite(candidateTopY) && Number.isFinite(candidateBottomY) &&
-                  candidateTopY <= mainBottomY + POSITION_TOLERANCE &&
-                  candidateBottomY >= mainTopY - POSITION_TOLERANCE;
-
-              console.log(`[DEBUG_RIGHE]    - Condición: !similarLargo=${!similarLargo}, similarX=${similarX}, startsBelow=${startsBelow}`);
-
-                if (!similarLargo && similarX && (startsBelow || overlapsCurrentFranja)) {
-                  // Es el primer sobrante V* válido
-                  firstSobranteY = firstPieceY; // Se usa para la Opción H subsecuente
-                  
-                  // 💥 ALMACENAR COMO PAR U/V
-                  potentialUVGroups.forEach(group => {
-                    combinedUVPairs.push({
-                      ancho_u: group.ancho_u,
-                      cortes_v: group.cortes_v.slice()
-                    });
-                  });
-                  potentialSobranteFranja.isSobrante = true; 
-                  lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
-                                         potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
-                  console.log(`[DEBUG_RIGHE]    - ✅ ACUMULADO como PRIMER SOBRANTE`);
-                  continue; 
-              } else {
-                  console.log(`[DEBUG_RIGHE]    - ❌ NO ACUMULADO como Primer Sobrante. BREAK.`);
-                  break;
-              }
-
-          } else {
-              // --- LÓGICA PARA SOBRANTES *SUBSECUENTES* ---
-              
-              // OPCIÓN 1: Apilado Verticalmente (RELAJADO)
-              const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
-              const expectedY = lastProcessedBottomY + kerfValue;
-              const startsBelow_Vertical_Relaxed = firstPieceY !== undefined &&
-                  (firstPieceY >= lastProcessedBottomY - kerfValue && 
-                   firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
-                   
-              // OPCIÓN 2: Agrupado Horizontalmente 
-              const startsAtSameY_Horizontal = numbersAlmostEqual(firstSobranteY, firstPieceY, POSITION_TOLERANCE);
-
-              if (similarX && startsBelow_Vertical_Relaxed || startsAtSameY_Horizontal) {
-                  
-                    potentialUVGroups.forEach(group => {
-                      let matchedPair = null;
-                      for (let idx = combinedUVPairs.length - 1; idx >= 0; idx--) {
-                        if (numbersAlmostEqual(combinedUVPairs[idx].ancho_u, group.ancho_u, WIDTH_TOLERANCE)) {
-                          matchedPair = combinedUVPairs[idx];
-                          break;
-                        }
-                      }
-
-                      if (matchedPair) {
-                        matchedPair.cortes_v.push(...group.cortes_v);
-                      } else {
-                        combinedUVPairs.push({
-                          ancho_u: group.ancho_u,
-                          cortes_v: group.cortes_v.slice()
-                        });
-                      }
-                    });
-                  
-                  potentialSobranteFranja.isSobrante = true;
-                  
-                  // Solo actualizar lastProcessedBottomY si es apilamiento vertical
-                  if (similarX && startsBelow_Vertical_Relaxed) {
-                      lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
-                                             potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
-                  }
-                  
-                  continue; 
-              }
-          }
-          
-          break; // Rompe si no se cumple ninguna condición.
-      } // --- FIN BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
-
-
-      // 4. Add the main phase
-      
-      if (combinedUVPairs.length > 0) {
-          sobranteData = combinedUVPairs; // 💥 Almacenar el arreglo de pares
+      const startsAtSameY = horizontalNumbersAlmostEqual(firstSobranteY, candidateTopY, positionTolerance);
+      if ((alignedX && startsBelow) || startsAtSameY) {
+        uvGroups.forEach(group => horizontalMergeUVGroup(combinedUVPairs, group, widthTolerance));
+        candidateStrip.isSobrante = true;
+        if (alignedX && startsBelow) {
+          lastProcessedBottomY = candidateStrip.bottomY;
+        }
+        continue;
       }
 
-      // *** Asignación de RU - (Se asume que la regla es SI HAY CORTES U, se aplica RU, y no se anula por V*) ***
-      //const phaseRefiloU = (Array.isArray(cortesU) && cortesU.length > 0) ? userRefilo : 0;
+      break;
+    }
 
-      // ----------------------------------------------------------------------
-      // 💥 CORRECCIÓN FINAL PARA RU: Anular RU si hay Sobrante V*
-      // ----------------------------------------------------------------------
-      const tieneCortesU = Array.isArray(cortesU) && cortesU.length > 0;
-      const tieneSobranteVstar = !!sobranteData; // Es true si combinedUVPairs.length > 0
+    if (combinedUVPairs.length) {
+      baseStrip.sobrante = combinedUVPairs;
+    }
+  }
+}
 
-      let phaseRefiloU = 0;
+function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = null } = {}) {
+  if (!plate || typeof plate.getPlacedPiecesWithCoords !== 'function') {
+    return null;
+  }
 
-      if (tieneCortesU) {
-          
-              // Regla 2 (Ejemplo 2, Fases que terminan sin V*):
-              // Si hay cortes U y la fase termina normalmente (sin V*), se aplica el RU.
-              // Esto cubre las fases 1, 3, 4, 5 de tu segundo ejemplo.
-              phaseRefiloU = userRefilo;
-         
-      }
-      
-      finalPhases.push({
-          kind: 'horizontal',
-          largo: franja.largo,
-          cantidad: 1,
-          refiloU: phaseRefiloU,
-          cortesU: cortesU,
-          sobrante: sobranteData
-      });
-      
-      // 💥 LOG FINAL PARA REVISAR LA ESTRUCTURA GENERADA
-      console.log(`[DEBUG_RIGHE] Fase ${i} Finalizada. SobranteData Generado:`, sobranteData);
+  const rawPlacements = plate.getPlacedPiecesWithCoords();
+  if (!Array.isArray(rawPlacements) || !rawPlacements.length) {
+    return null;
+  }
 
-  } // End main loop (i)
+  const normalizedPlacements = rawPlacements
+    .map((piece) => ({
+      x: Number(piece?.x),
+      y: Number(piece?.y || piece?.top || 0),
+      width: Number(piece?.width),
+      height: Number(piece?.height)
+    }))
+    .filter((piece) =>
+      Number.isFinite(piece.x) &&
+      Number.isFinite(piece.y) &&
+      Number.isFinite(piece.width) && piece.width > 0 &&
+      Number.isFinite(piece.height) && piece.height > 0
+    )
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+
+  if (!normalizedPlacements.length) {
+    return null;
+  }
+
+  const strips = collectHorizontalStrips(normalizedPlacements);
+  if (!strips.length) {
+    return null;
+  }
+
+  detectHorizontalSobrantes(strips, {
+    widthTolerance: HORIZONTAL_WIDTH_TOLERANCE,
+    positionTolerance: HORIZONTAL_POSITION_TOLERANCE,
+    kerfValue: HORIZONTAL_DEFAULT_KERF
+  });
+
+  const refiloValue = Number(uiTrim?.mm);
+  const userRefilo = Number.isFinite(refiloValue) && refiloValue > 0 ? refiloValue : 0;
+  const phases = [];
+
+  strips.forEach((strip, idx) => {
+    if (strip.isSobrante) {
+      return;
+    }
+
+    const cortesU = strip.placements.map((placement) => placement.height);
+    const sobrante = Array.isArray(strip.sobrante) && strip.sobrante.length
+      ? strip.sobrante.map((entry) => ({
+          ancho_u: entry.ancho_u,
+          cortes_v: entry.cortes_v.slice()
+        }))
+      : null;
+
+    phases.push({
+      kind: 'horizontal',
+      largo: strip.largo,
+      cantidad: 1,
+      refiloU: cortesU.length ? userRefilo : 0,
+      cortesU,
+      sobrante
+    });
+
+    console.log(`[DEBUG_RIGHE] Fase horizontal ${idx + 1} generada`, {
+      largo: strip.largo,
+      cortesU,
+      sobrante
+    });
+  });
+
+  if (!phases.length) {
+    return null;
+  }
 
   const refiloInicial = determineInitialRefilo({
     orientation: 'horizontal',
@@ -9697,7 +9760,7 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
     orientation: 'horizontal',
     refilo_inicial: refiloInicial,
     refilos: [],
-    phases: finalPhases
+    phases
   };
 }
 
@@ -9762,7 +9825,10 @@ function generateCNCFiles() {
       id: `plate-${index}`,
       width: plateMeta?.width ?? inst.width ?? inst.sw ?? basePlate.sw ?? 2740,
       height: plateMeta?.height ?? inst.height ?? inst.sh ?? basePlate.sh ?? 1820,
-      material: plateMeta?.material ?? inst.material ?? basePlate.material ?? currentMaterialName ?? 'Material'
+      material: plateMeta?.material ?? inst.material ?? basePlate.material ?? currentMaterialName ?? 'Material',
+      layoutStrategy: typeof plateMeta?.layoutStrategy === 'string'
+        ? plateMeta.layoutStrategy
+        : (typeof inst?.layoutStrategy === 'string' ? inst.layoutStrategy : undefined)
     };
     
     // Tomar los placements de la placa correspondiente si existen; si no, usar la primera como fallback
@@ -9833,10 +9899,28 @@ function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
     ? normalizedPlacements.map(({ x, y, width, height }) => ({ x, y, width, height }))
     : [];
 
+  const normalizeStrategy = (value) => {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.toLowerCase();
+    if (normalized === 'column') return 'vertical';
+    if (normalized === 'band') return 'horizontal';
+    if (normalized === 'vertical' || normalized === 'horizontal') return normalized;
+    return undefined;
+  };
+
+  const plateIdx = Math.max(0, Number(plateNumber) - 1);
+  const displayedStrategy = normalizeStrategy(currentDisplayedPlateSpecs?.[plateIdx]?.layoutStrategy);
+  const instanceStrategy = normalizeStrategy(instance?.layoutStrategy);
+  let preferredStrategy = instanceStrategy || displayedStrategy || null;
+
   const refiloPreferido = getRefiladoInputValue();
   const plateModel = Array.isArray(lastOptimizationResult?.plates)
     ? lastOptimizationResult.plates[Number(plateNumber) - 1]
     : null;
+  const modelStrategy = normalizeStrategy(plateModel?.layoutStrategy);
+  if (!preferredStrategy) {
+    preferredStrategy = modelStrategy || null;
+  }
 
   const trimConfig = normalizeUiTrimConfig(uiTrim);
   const kerfValue = Number.isFinite(kerf) ? kerf : getKerfMm();
@@ -9864,6 +9948,7 @@ function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
             trimTop: Number.isFinite(Number(plateModel.trimTop)) ? Number(plateModel.trimTop) : fallbackPlateProps.trimTop,
             trimRight: Number.isFinite(Number(plateModel.trimRight)) ? Number(plateModel.trimRight) : fallbackPlateProps.trimRight,
             trimBottom: Number.isFinite(Number(plateModel.trimBottom)) ? Number(plateModel.trimBottom) : fallbackPlateProps.trimBottom,
+            layoutStrategy: modelStrategy || preferredStrategy || undefined,
             getPlacedPiecesWithCoords: () => modelForComparison.map((entry) => ({ ...entry }))
           };
         } else {
@@ -9877,6 +9962,7 @@ function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
     if (!planPlate) {
       planPlate = {
         ...fallbackPlateProps,
+        layoutStrategy: preferredStrategy || undefined,
         getPlacedPiecesWithCoords: () => planPlacements.map((entry) => ({ ...entry }))
       };
     }
@@ -9888,7 +9974,17 @@ function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
     throw new Error('No hay placements válidos para construir el plan CNC de esta placa.');
   }
 
-  const plan = buildCutPlanForPlate(planPlate, { refiloPreferido, uiTrim });
+  if (!preferredStrategy) {
+    preferredStrategy = normalizeStrategy(planPlate.layoutStrategy) || null;
+  }
+
+  if (preferredStrategy) {
+    planPlate.layoutStrategy = preferredStrategy;
+  }
+
+  console.log('[CNC] Estrategia detectada para placa', plateNumber, preferredStrategy || 'auto');
+
+  const plan = buildCutPlanForPlate(planPlate, { refiloPreferido, uiTrim, strategy: preferredStrategy });
   if (!plan) {
     throw new Error('No se pudo construir el plan de corte para la placa.');
   }
