@@ -1177,10 +1177,10 @@ export function optimizeCutLayoutBands(pieces, plateSpec, options = {}) {
     iterations = 100
   } = options;
 
-  console.log('🎯 Iniciando optimización avanzada (franjas horizontales)...');
+  /*console.log('🎯 Iniciando optimización avanzada (franjas horizontales)...');
   console.log(`   Piezas: ${pieces.length}`);
   console.log(`   Placa: ${plateSpec.width} × ${plateSpec.height} mm`);
-  console.log(`   Algoritmo: ${algorithm}`);
+  console.log(`   Algoritmo: ${algorithm}`);*/
 
   switch (algorithm) {
     case 'ffd': {
