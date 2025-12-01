@@ -9940,6 +9940,9 @@ function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
   const plateHeight = instance.height || 1820;
   const plateMaterial = instance.material || 'Material';
   const plateThickness = 18;
+  const plateHeightThickness = 18;
+  const VelRotaz = 3000;
+  const VelAvanz = 30;
 
   console.log('🔧 Generando CNC para placa:', {
     plateNumber,
@@ -9954,6 +9957,9 @@ function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
   content += `Lunghezza=${plateWidth.toFixed(6)}\n`;
   content += `Larghezza=${plateHeight.toFixed(6)}\n`;
   content += `Spessore=${plateThickness}.000000\n\n`;
+  content += `AltPacco=${plateHeightThickness}.000000\n\n`;
+  content += `VelRotaz=${VelRotaz}`;
+  content += `VelAvanz=${VelAvanz}.000000\n\n`;
 
   const normalizedPlacements = platePlacements.map((placement, index) => normalizePlacementForCNC(placement, index));
   const allPlacementsValid = normalizedPlacements.every((entry) => entry?.valid);
