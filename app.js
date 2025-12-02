@@ -1138,6 +1138,7 @@ function updateSummaryWithAdvancedReport(report) {
 }
 
 const authUser = typeof ensureAuthenticated === 'function' ? ensureAuthenticated() : null;
+const canEditPlateSize = !!authUser;
 
 const DEFAULT_ADMIN_EMAILS = ['marcossuhit@gmail.com', 'fernandofreireadrian@gmail.com'];
 let adminDirectory = [];
@@ -4051,7 +4052,7 @@ function applyPlatesGate() {
 }
 
 function enforceDefaultPlateSize(row) {
-  if (isBackofficeAllowed || !row) return;
+  if (isBackofficeAllowed || canEditPlateSize || !row) return;
   const widthInput = row.querySelector('input.plate-w');
   const heightInput = row.querySelector('input.plate-h');
   const quantityInput = row.querySelector('input.plate-c');
@@ -4079,11 +4080,18 @@ function enforceDefaultPlateSize(row) {
 
 if (platesEl && addPlateBtn) {
   const appendPlateRow = () => {
-    const row = makePlateRow(isBackofficeAllowed ? {} : {
-      readOnlySize: true,
-      width: getDefaultPlateWidth(),
-      height: getDefaultPlateHeight()
-    });
+    const allowCustomPlateSize = isBackofficeAllowed || canEditPlateSize;
+    const rowOptions = allowCustomPlateSize
+      ? (isBackofficeAllowed ? {} : {
+        width: getDefaultPlateWidth(),
+        height: getDefaultPlateHeight()
+      })
+      : {
+        readOnlySize: true,
+        width: getDefaultPlateWidth(),
+        height: getDefaultPlateHeight()
+      };
+    const row = makePlateRow(rowOptions);
     platesEl.appendChild(row);
     enforceDefaultPlateSize(row);
     ensureKerfField();
@@ -4446,6 +4454,8 @@ function clearAllPlates() {
 
 function loadState(state) {
   clearAllPlates();
+  const defaultPlateWidth = getDefaultPlateWidth();
+  const defaultPlateHeight = getDefaultPlateHeight();
   if (projectNameEl && typeof state.name === 'string') projectNameEl.value = state.name;
   if (typeof state.kerfMm === 'number') {
     pendingKerfValue = String(state.kerfMm);
@@ -4484,9 +4494,14 @@ function loadState(state) {
   if (platesEl && Array.isArray(state.plates)) {
     state.plates.forEach((p, plateIdx) => {
       if (!isBackofficeAllowed && plateIdx > 0) return; // Solo una placa para usuarios finales
-      const rowOptions = isBackofficeAllowed
-        ? {}
-        : { readOnlySize: true, width: DEFAULT_PLATE_WIDTH, height: DEFAULT_PLATE_HEIGHT };
+      const parsedWidth = Number(p?.sw);
+      const parsedHeight = Number(p?.sh);
+      const storedWidth = Number.isFinite(parsedWidth) ? parsedWidth : defaultPlateWidth;
+      const storedHeight = Number.isFinite(parsedHeight) ? parsedHeight : defaultPlateHeight;
+      const allowCustomPlateSize = isBackofficeAllowed || canEditPlateSize;
+      const rowOptions = allowCustomPlateSize
+        ? (isBackofficeAllowed ? {} : { width: storedWidth, height: storedHeight })
+        : { readOnlySize: true, width: defaultPlateWidth, height: defaultPlateHeight };
       const r = makePlateRow(rowOptions);
       const widthInput = r.querySelector('input.plate-w');
       const heightInput = r.querySelector('input.plate-h');
@@ -4494,8 +4509,12 @@ function loadState(state) {
       if (widthInput) {
         if (isBackofficeAllowed) {
           widthInput.value = String(p.sw || '');
+        } else if (canEditPlateSize) {
+          widthInput.value = String(storedWidth);
+          widthInput.disabled = false;
+          widthInput.classList.remove('readonly-input');
         } else {
-          widthInput.value = String(DEFAULT_PLATE_WIDTH);
+          widthInput.value = String(defaultPlateWidth);
           widthInput.disabled = true;
           widthInput.classList.add('readonly-input');
         }
@@ -4503,8 +4522,12 @@ function loadState(state) {
       if (heightInput) {
         if (isBackofficeAllowed) {
           heightInput.value = String(p.sh || '');
+        } else if (canEditPlateSize) {
+          heightInput.value = String(storedHeight);
+          heightInput.disabled = false;
+          heightInput.classList.remove('readonly-input');
         } else {
-          heightInput.value = String(DEFAULT_PLATE_HEIGHT);
+          heightInput.value = String(defaultPlateHeight);
           heightInput.disabled = true;
           heightInput.classList.add('readonly-input');
         }
@@ -4520,12 +4543,14 @@ function loadState(state) {
         if (sides[3]) sides[3].checked = !!p.trim.left;
       }
       platesEl.appendChild(r);
+      enforceDefaultPlateSize(r);
     });
-    if (!isBackofficeAllowed) {
+    if (!isBackofficeAllowed && !canEditPlateSize) {
       const plateRows = platesEl.querySelectorAll('.plate-row');
       if (!plateRows.length) {
-        const fallbackRow = makePlateRow({ readOnlySize: true, width: DEFAULT_PLATE_WIDTH, height: DEFAULT_PLATE_HEIGHT });
+        const fallbackRow = makePlateRow({ readOnlySize: true, width: defaultPlateWidth, height: defaultPlateHeight });
         platesEl.appendChild(fallbackRow);
+        enforceDefaultPlateSize(fallbackRow);
       }
     }
   }
