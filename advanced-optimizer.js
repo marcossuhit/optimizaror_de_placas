@@ -39,11 +39,12 @@ class Strip {
 
     // Buscar un shelf existente donde quepa
     for (const shelf of this.shelves) {
-      if (shelf.addPiece(piece)) {
+      const placement = shelf.addPiece(piece);
+      if (placement) {
         this.pieces.push({
           piece,
-          x: this.x + shelf.currentWidth - piece.width,
-          y: shelf.y,
+          x: placement.x,
+          y: placement.y,
           width: piece.width,
           height: piece.height
         });
@@ -67,22 +68,24 @@ class Strip {
       this.kerf
     );
 
-    if (newShelf.addPiece(piece)) {
-      this.shelves.push(newShelf);
-      this.currentHeight += piece.height + (this.shelves.length > 1 ? this.kerf : 0);
-      
-      this.pieces.push({
-        piece,
-        x: this.x,
-        y: shelfY,
-        width: piece.width,
-        height: piece.height
-      });
-      
-      return true;
+    const placement = newShelf.addPiece(piece);
+    if (!placement) {
+      return false;
     }
 
-    return false;
+    const verticalSpacing = this.shelves.length > 0 ? this.kerf : 0;
+    this.shelves.push(newShelf);
+    this.currentHeight += newShelf.height + verticalSpacing;
+
+    this.pieces.push({
+      piece,
+      x: placement.x,
+      y: placement.y,
+      width: piece.width,
+      height: piece.height
+    });
+
+    return true;
   }
 
   get usedArea() {
@@ -110,22 +113,30 @@ class Shelf {
   }
 
   addPiece(piece) {
-    // Limitar a una sola pieza por shelf para evitar apilar lateralmente
-    if (this.pieces.length > 0) {
-      return false;
-    }
-
     if (piece.height > this.height + EPSILON) {
-      return false;
+      return null;
     }
 
     if (piece.width > this.maxWidth + EPSILON) {
-      return false;
+      return null;
+    }
+
+    const needsKerf = this.pieces.length > 0;
+    const kerfGap = needsKerf ? this.kerf : 0;
+    const startX = this.currentWidth + kerfGap;
+    const requiredWidth = startX + piece.width;
+
+    if (requiredWidth > this.maxWidth + EPSILON) {
+      return null;
     }
 
     this.pieces.push(piece);
-    this.currentWidth = piece.width;
-    return true;
+    this.currentWidth = requiredWidth;
+
+    return {
+      x: this.x + startX,
+      y: this.y
+    };
   }
 }
 
@@ -322,10 +333,12 @@ function firstFitDecreasing(pieces, plateSpec, options = {}) {
     kerf = 5,
     trimLeft = 13,
     trimTop = 13,
-    allowRotation = true
+    allowRotation = true,
+    sortingStrategy = 'area-desc',
+    useGivenOrder = false
   } = options;
 
-  const sorted = sortPieces(pieces, 'area-desc');
+  const sorted = useGivenOrder ? [...pieces] : sortPieces(pieces, sortingStrategy);
   const plates = [];
   const remaining = [];
 
@@ -396,10 +409,12 @@ function bestFitDecreasing(pieces, plateSpec, options = {}) {
     kerf = 5,
     trimLeft = 13,
     trimTop = 13,
-    allowRotation = true
+    allowRotation = true,
+    sortingStrategy = 'area-desc',
+    useGivenOrder = false
   } = options;
 
-  const sorted = sortPieces(pieces, 'area-desc');
+  const sorted = useGivenOrder ? [...pieces] : sortPieces(pieces, sortingStrategy);
   const plates = [];
   const remaining = [];
 
@@ -569,7 +584,10 @@ function simulatedAnnealing(pieces, plateSpec, options = {}, iterations = 100) {
 
   for (const strategy of strategies) {
     const sorted = sortPieces(pieces, strategy);
-    const solution = firstFitDecreasing(sorted, plateSpec, options);
+    const solution = firstFitDecreasing(sorted, plateSpec, {
+      ...options,
+      useGivenOrder: true
+    });
     const evaluation = evaluateSolution(solution.plates, options);
 
     if (!bestInitialSolution || evaluation.score > bestInitialEval.score) {
@@ -624,7 +642,10 @@ function simulatedAnnealing(pieces, plateSpec, options = {}, iterations = 100) {
     }
 
     // Generar nueva solución
-    const newSolution = firstFitDecreasing(shuffled, plateSpec, options);
+    const newSolution = firstFitDecreasing(shuffled, plateSpec, {
+      ...options,
+      useGivenOrder: true
+    });
     const newEval = evaluateSolution(newSolution.plates, options);
 
     // Decidir si aceptar la nueva solución
@@ -676,7 +697,11 @@ export function optimizeCutLayout(pieces, plateSpec, options = {}) {
 
   switch (algorithm) {
     case 'ffd':
-      result = firstFitDecreasing(pieces, plateSpec, options);
+      result = firstFitDecreasing(pieces, plateSpec, {
+        ...options,
+        sortingStrategy: options.sortingStrategy || 'area-desc',
+        useGivenOrder: options.useGivenOrder ?? false
+      });
       return {
         plates: result.plates,
         remaining: result.remaining,
@@ -684,7 +709,11 @@ export function optimizeCutLayout(pieces, plateSpec, options = {}) {
       };
 
     case 'bfd':
-      result = bestFitDecreasing(pieces, plateSpec, options);
+      result = bestFitDecreasing(pieces, plateSpec, {
+        ...options,
+        sortingStrategy: options.sortingStrategy || 'area-desc',
+        useGivenOrder: options.useGivenOrder ?? false
+      });
       return {
         plates: result.plates,
         remaining: result.remaining,
@@ -952,10 +981,12 @@ function firstFitDecreasingBands(pieces, plateSpec, options = {}) {
     trimTop = 13,
     trimRight = 0,
     trimBottom = 0,
-    allowRotation = true
+    allowRotation = true,
+    sortingStrategy = 'height-desc',
+    useGivenOrder = false
   } = options;
 
-  const sorted = sortPieces(pieces, 'height-desc');
+  const sorted = useGivenOrder ? [...pieces] : sortPieces(pieces, sortingStrategy);
   const plates = [];
   const remaining = [];
 
@@ -1010,10 +1041,12 @@ function bestFitDecreasingBands(pieces, plateSpec, options = {}) {
     trimTop = 13,
     trimRight = 0,
     trimBottom = 0,
-    allowRotation = true
+    allowRotation = true,
+    sortingStrategy = 'height-desc',
+    useGivenOrder = false
   } = options;
 
-  const sorted = sortPieces(pieces, 'height-desc');
+  const sorted = useGivenOrder ? [...pieces] : sortPieces(pieces, sortingStrategy);
   const plates = [];
   const remaining = [];
 
@@ -1095,7 +1128,10 @@ function simulatedAnnealingBands(pieces, plateSpec, options = {}, iterations = 1
 
   for (const strategy of strategies) {
     const sorted = sortPieces(pieces, strategy);
-    const solution = firstFitDecreasingBands(sorted, plateSpec, options);
+    const solution = firstFitDecreasingBands(sorted, plateSpec, {
+      ...options,
+      useGivenOrder: true
+    });
     const evaluation = evaluateSolution(solution.plates, options);
 
     if (!bestInitialSolution || evaluation.score > (bestInitialEval?.score ?? -Infinity)) {
@@ -1104,7 +1140,10 @@ function simulatedAnnealingBands(pieces, plateSpec, options = {}, iterations = 1
     }
   }
 
-  let currentSolution = bestInitialSolution || firstFitDecreasingBands(pieces, plateSpec, options);
+  let currentSolution = bestInitialSolution || firstFitDecreasingBands(pieces, plateSpec, {
+    ...options,
+    useGivenOrder: true
+  });
   let currentEval = bestInitialEval || evaluateSolution(currentSolution.plates, options);
   let bestSolution = currentSolution;
   let bestEval = currentEval;
@@ -1147,7 +1186,10 @@ function simulatedAnnealingBands(pieces, plateSpec, options = {}, iterations = 1
       });
     }
 
-    const newSolution = firstFitDecreasingBands(shuffled, plateSpec, options);
+    const newSolution = firstFitDecreasingBands(shuffled, plateSpec, {
+      ...options,
+      useGivenOrder: true
+    });
     const newEval = evaluateSolution(newSolution.plates, options);
     const delta = newEval.score - currentEval.score;
     const acceptProbability = delta > 0 ? 1 : Math.exp(delta / temperature);
@@ -1184,7 +1226,11 @@ export function optimizeCutLayoutBands(pieces, plateSpec, options = {}) {
 
   switch (algorithm) {
     case 'ffd': {
-      const result = firstFitDecreasingBands(pieces, plateSpec, options);
+      const result = firstFitDecreasingBands(pieces, plateSpec, {
+        ...options,
+        sortingStrategy: options.sortingStrategy || 'height-desc',
+        useGivenOrder: options.useGivenOrder ?? false
+      });
       return {
         plates: result.plates,
         remaining: result.remaining,
@@ -1192,7 +1238,11 @@ export function optimizeCutLayoutBands(pieces, plateSpec, options = {}) {
       };
     }
     case 'bfd': {
-      const result = bestFitDecreasingBands(pieces, plateSpec, options);
+      const result = bestFitDecreasingBands(pieces, plateSpec, {
+        ...options,
+        sortingStrategy: options.sortingStrategy || 'height-desc',
+        useGivenOrder: options.useGivenOrder ?? false
+      });
       return {
         plates: result.plates,
         remaining: result.remaining,

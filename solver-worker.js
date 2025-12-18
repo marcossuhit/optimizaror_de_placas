@@ -3,6 +3,13 @@
 
 let shouldStop = false;
 
+const DEBUG_VERTICAL = typeof process !== 'undefined' && process?.env?.DEBUG_JOSE;
+const logVertical = (...args) => {
+  if (DEBUG_VERTICAL) {
+    console.log('[VERTICAL]', ...args);
+  }
+};
+
 // Configuración del algoritmo
 const PACKING_EPSILON = 0.0001;
 // Funciones auxiliares del algoritmo
@@ -138,7 +145,7 @@ function findOptimalStripWidth(state, pool, allowAutoRotate, remainingWidth) {
   for (const [width, group] of widthGroups) {
     // Calcular área potencial incluyendo piezas más pequeñas
     const smallerPiecesArea = group.smallerPieces.reduce((sum, p) => sum + p.area, 0);
-    const totalPotentialArea = group.totalArea + smallerPiecesArea * 0.7; // Factor de descuento
+    const totalPotentialArea = group.totalArea + smallerPiecesArea * 0.9; // Permitir combinar anchos cercanos
     
     // Score: priorizar área total, cantidad de piezas principales y piezas secundarias
     const score = totalPotentialArea * 1000 + 
@@ -151,6 +158,15 @@ function findOptimalStripWidth(state, pool, allowAutoRotate, remainingWidth) {
     }
   }
   
+  if (bestGroup) {
+    logVertical('plan-strip', {
+      width: bestGroup.width,
+      primary: bestGroup.pieces.length,
+      secondary: bestGroup.smallerPieces.length,
+      totalArea: Number(bestScore / 1000).toFixed(2)
+    });
+  }
+
   return bestGroup;
 }
 
@@ -409,12 +425,19 @@ function fillStripWithShelfPacking(state, strip, pool, allowAutoRotate, kerf, pl
           const area = orientation.width * orientation.height;
           const widthUtil = orientation.width / Math.max(remainingWidth, 1);
           const heightMatch = shelfHeight > 0 && Math.abs(orientation.height - shelfHeight) <= PACKING_EPSILON;
-          
-          // NUEVO: Penalizar fuertemente piezas que desperdician altura del shelf
+
+          // Penalizar piezas que son más bajas que el estante actual
           const heightWaste = shelfHeight > 0 ? Math.max(0, shelfHeight - orientation.height) : 0;
           const heightWastePenalty = heightWaste * 1000;
-          
-          const score = (heightMatch ? 1000000 : 0) + area * 1000 + widthUtil * 500 - heightWastePenalty;
+
+          // Penalizar piezas que exceden considerablemente la altura del estante
+          let heightOverflowPenalty = 0;
+          if (shelfHeight > 0 && orientation.height > shelfHeight + PACKING_EPSILON) {
+            const overflowRatio = orientation.height / Math.max(shelfHeight, 1);
+            heightOverflowPenalty = area * 500 * (overflowRatio - 1);
+          }
+
+          const score = (heightMatch ? 1000000 : 0) + area * 1000 + widthUtil * 500 - heightWastePenalty - heightOverflowPenalty;
           
           if (score > bestScore) {
             bestScore = score;
@@ -461,6 +484,16 @@ function fillStripWithShelfPacking(state, strip, pool, allowAutoRotate, kerf, pl
       bestPiece.entry.placed = true;
       bestPiece.entry.finalRotated = bestPiece.orientation.rotated;
       metrics.usedArea += bestPiece.orientation.width * bestPiece.orientation.height;
+      logVertical('placed-shelf-piece', {
+        plateIdx,
+        pieceId: bestPiece.entry.id,
+        stripX: strip.x,
+        xCursor,
+        yCursor,
+        width: bestPiece.orientation.width,
+        height: bestPiece.orientation.height,
+        stripWidth: strip.width
+      });
       
       xCursor += bestPiece.orientation.width;
       shelfHasPieces = true;
@@ -642,23 +675,66 @@ function executePackingAlgorithm(states, pool, allowAutoRotate, kerf, placements
     // FASE 1: Crear tiras verticales (cortes de guillotina verticales)
     while (!shouldStop && hasUnplacedPieces(pool)) {
       let remainingWidth = state.offX + state.usableW - xCursor;
-      
+
       // Aplicar kerf entre tiras
       if (stripCount > 0) {
         remainingWidth -= kerf;
         if (remainingWidth <= PACKING_EPSILON) break;
       }
 
-      // Buscar la mejor pieza para iniciar una nueva tira
-      const starter = pickStripStarter(state, pool, allowAutoRotate, remainingWidth);
-      if (!starter) break;
+      const stripPlan = findOptimalStripWidth(state, pool, allowAutoRotate, remainingWidth);
+
+      let starter = null;
+      let targetStripWidth = null;
+
+      if (stripPlan && stripPlan.pieces.length) {
+        // Elegir la pieza con mayor área dentro del grupo como arranque de la tira
+        const bestCandidate = stripPlan.pieces.reduce((best, candidate) => {
+          const widthGap = Math.abs(stripPlan.width - candidate.orientation.width);
+          const score = candidate.area - widthGap * 500; // privilegiar piezas que llenan el ancho
+          if (!best || score > best.score) {
+            return {
+              ...candidate,
+              score
+            };
+          }
+          return best;
+        }, null);
+
+        if (bestCandidate) {
+          starter = {
+            index: bestCandidate.index,
+            orientation: bestCandidate.orientation
+          };
+          targetStripWidth = stripPlan.width;
+        }
+      }
+
+      if (!starter) {
+        const fallbackStarter = pickStripStarter(state, pool, allowAutoRotate, remainingWidth);
+        if (!fallbackStarter) break;
+        starter = fallbackStarter;
+        targetStripWidth = fallbackStarter.orientation.width;
+        logVertical('fallback-strip', {
+          plateIdx,
+          xCursor,
+          width: targetStripWidth
+        });
+      } else {
+        logVertical('planned-strip', {
+          plateIdx,
+          xCursor,
+          width: targetStripWidth,
+          starterId: pool[starter.index]?.id
+        });
+      }
       
       // Aplicar kerf si no es la primera tira
       if (stripCount > 0) {
         xCursor += kerf;
       }
 
-      if (xCursor + starter.orientation.width > state.offX + state.usableW + PACKING_EPSILON) {
+      if (xCursor + targetStripWidth > state.offX + state.usableW + PACKING_EPSILON) {
         if (stripCount > 0) {
           xCursor -= kerf;
         }
@@ -667,7 +743,7 @@ function executePackingAlgorithm(states, pool, allowAutoRotate, kerf, placements
 
       // Crear la tira
       const strip = {
-        width: starter.orientation.width,
+        width: targetStripWidth,
         x: xCursor,
         nextY: state.offY
       };
@@ -700,6 +776,13 @@ function executePackingAlgorithm(states, pool, allowAutoRotate, kerf, placements
       metrics.usedArea += starter.orientation.width * starter.orientation.height;
       
       strip.nextY = firstY + starter.orientation.height;
+      logVertical('placed-strip-starter', {
+        plateIdx,
+        pieceId: entry.id,
+        stripWidth: strip.width,
+        pieceWidth: starter.orientation.width,
+        pieceHeight: starter.orientation.height
+      });
 
       // FASE 2: Llenar la tira con shelf packing
       fillStripWithPieces(state, strip, pool, allowAutoRotate, kerf, plateIdx, placements, placementsByPlate, bestOrder, metrics);
@@ -769,6 +852,10 @@ function solveCutLayoutWorker(inputs) {
     acceptedMoves: solution.acceptedMoves || 0,
     baseScore: solution.baseScore || 0
   };
+}
+
+if (typeof module !== 'undefined' && module?.exports) {
+  module.exports = { solveCutLayoutWorker };
 }
 
 // Manejador de mensajes del worker

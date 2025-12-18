@@ -1,0 +1,24 @@
+{
+  "name": "jose-vertical",
+  "plates": [
+    {
+      "sw": 2750,
+      "sh": 1830,
+      "trim": {
+        "mm": 5,
+        "top": true,
+        "left": true,
+        "right": false,
+        "bottom": false
+      }
+    }
+  ],
+  "rows": [
+    { "qty": 4, "w": 2080, "h": 202, "rot": false },
+    { "qty": 4, "w": 2580, "h": 100, "rot": false },
+    { "qty": 1, "w": 925,  "h": 202, "rot": false },
+    { "qty": 1, "w": 1190, "h": 100, "rot": false }
+  ],
+  "kerfMm": 4,
+  "autoRotate": true
+}
