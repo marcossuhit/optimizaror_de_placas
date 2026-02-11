@@ -10236,6 +10236,16 @@ function addCNCExportButton() {
   
   exportSection.appendChild(cncBtn);
   
+  // Botón de prueba solicitado
+  const testBtn = document.createElement('button');
+  testBtn.id = 'cncTestBtn';
+  testBtn.className = 'btn';
+  testBtn.style.cssText = 'background: repeating-linear-gradient(45deg, #374151, #374151 10px, #1f2937 10px, #1f2937 20px); border: 2px dashed #fbbf24; color: #fbbf24; margin-left: 8px; font-weight: bold;';
+  testBtn.innerHTML = '🧪 CNC TEST';
+  testBtn.title = 'Botón de prueba (misma función que Generar CNC)';
+  testBtn.onclick = generateCNCFiles;
+  exportSection.appendChild(testBtn);
+
   // Actualizar estado del botón
   updateCNCButtonState();
 }
@@ -10245,7 +10255,8 @@ function addCNCExportButton() {
  */
 function updateCNCButtonState() {
   const cncBtn = document.querySelector('#cncExportBtn');
-  if (!cncBtn) {
+  const testBtn = document.querySelector('#cncTestBtn');
+  if (!cncBtn && !testBtn) {
     return;
   }
   
@@ -10307,13 +10318,27 @@ function updateCNCButtonState() {
   }
   
   if (hasOptimizedPlates) {
-    cncBtn.disabled = false;
-    cncBtn.classList.remove('disabled-btn');
-    cncBtn.style.opacity = '1';
+    if (cncBtn) {
+      cncBtn.disabled = false;
+      cncBtn.classList.remove('disabled-btn');
+      cncBtn.style.opacity = '1';
+    }
+    if (testBtn) {
+      testBtn.disabled = false;
+      testBtn.classList.remove('disabled-btn');
+      testBtn.style.opacity = '1';
+    }
   } else {
-    cncBtn.disabled = true;
-    cncBtn.classList.add('disabled-btn');
-    cncBtn.style.opacity = '0.5';
+    if (cncBtn) {
+      cncBtn.disabled = true;
+      cncBtn.classList.add('disabled-btn');
+      cncBtn.style.opacity = '0.5';
+    }
+    if (testBtn) {
+      testBtn.disabled = true;
+      testBtn.classList.add('disabled-btn');
+      testBtn.style.opacity = '0.5';
+    }
   }
 }
 
