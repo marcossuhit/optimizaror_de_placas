@@ -10,12 +10,16 @@ function collectRigheEntriesFromPlan(plan) {
 
   const entries = [];
 
+  const planOrientation = typeof plan.orientation === 'string' ? plan.orientation.toLowerCase() : '';
   // Refilo inicial (RX/RY)
   const initialRefilo = plan.refilo_inicial;
   if (initialRefilo && typeof initialRefilo.tipo === 'string') {
     const measure = Number(initialRefilo.medida);
     if (Number.isFinite(measure) && measure > 0) {
-      entries.push({ command: initialRefilo.tipo, measure, quantity: 1 });
+      const normalizedType = planOrientation === 'horizontal' && initialRefilo.tipo === 'RX'
+        ? 'P'
+        : initialRefilo.tipo;
+      entries.push({ command: normalizedType, measure, quantity: 1 });
     }
   }
 
@@ -70,35 +74,71 @@ function collectRigheEntriesFromPlan(plan) {
 
     } else if (phase.kind === 'horizontal') {
       // Lógica de Patrón Horizontal (X, RU, U, V*)
-      entries.push({ command: 'X', measure: phase.largo, quantity: phase.cantidad || 1 });
-      if (Number.isFinite(phase.refiloU) && phase.refiloU > 0) {
-        entries.push({ command: 'RU', measure: phase.refiloU, quantity: 1 });
-      }
-      
-      // Cortes U (principales)
-      (Array.isArray(phase.cortesU) ? phase.cortesU : []).forEach(corte => {
-        entries.push({ command: 'U', measure: corte, quantity: 1 });
-      });
-      
-      // Sobrante V* - LÓGICA CORREGIDA PARA V* -> U -> V -> U -> V
-      const combinedUVPairs = phase.sobrante; // Ahora es el arreglo de pares U/V
-      
-      if (Array.isArray(combinedUVPairs) && combinedUVPairs.length > 0) {
-        entries.push({ command: 'V*', measure: 0, quantity: 1 });
-        
-        // 💥 ITERAR sobre cada par U/V
-        combinedUVPairs.forEach(uvPair => {
-            const ancho_u = uvPair.ancho_u;
-            const cortes_v = Array.isArray(uvPair.cortes_v) ? uvPair.cortes_v : [];
+      const toPositiveNumber = (value) => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+      };
 
-            // Generar pares U/V por cada corte de sobrante registrado
-            if (Number.isFinite(ancho_u) && ancho_u > 0) {
-              cortes_v.forEach(corteV => {
-                entries.push({ command: 'U', measure: ancho_u, quantity: 1 });
-                entries.push({ command: 'V', measure: corteV, quantity: 1 });
-              });
-            }
-        });
+      const candidateQuantity = Number.isFinite(Number(phase.cantidad))
+        ? Number(phase.cantidad)
+        : (Number.isFinite(Number(phase.quantity)) ? Number(phase.quantity) : 1);
+      const horizontalQuantity = Number(candidateQuantity) > 0 ? Number(candidateQuantity) : 1;
+
+      const phaseMeasure = toPositiveNumber(phase.largo);
+      if (phaseMeasure > 0) {
+        entries.push({ command: 'P', measure: phaseMeasure, quantity: horizontalQuantity });
+      }
+
+      const refiloU = toPositiveNumber(phase.refiloU);
+      if (refiloU > 0) {
+        entries.push({ command: 'RY', measure: refiloU, quantity: 1 });
+      }
+
+      (Array.isArray(phase.cortesU) ? phase.cortesU : []).forEach((corte) => {
+        const corteValue = toPositiveNumber(corte);
+        if (corteValue > 0) {
+          entries.push({ command: 'Y', measure: corteValue, quantity: 1 });
+        }
+      });
+
+      const sobrantePairs = Array.isArray(phase.sobrante) ? phase.sobrante : [];
+      if (sobrantePairs.length) {
+        entries.push({ command: 'X*', measure: 0, quantity: 1 });
+
+        const normalizedPairs = sobrantePairs.map((sobrante) => {
+          const ancho = toPositiveNumber(sobrante?.ancho_u);
+          const cortes = (Array.isArray(sobrante?.cortes_v) ? sobrante.cortes_v : [])
+            .map((value) => toPositiveNumber(value))
+            .filter((value) => value > 0);
+          return { ancho, cortes };
+        }).filter((pair) => pair.cortes.length);
+
+        if (normalizedPairs.length) {
+          const maxCuts = Math.max(...normalizedPairs.map((pair) => pair.cortes.length));
+
+          for (let cutIndex = 0; cutIndex < maxCuts; cutIndex++) {
+            normalizedPairs.forEach((pair, pairIndex) => {
+              const corteValue = pair.cortes[cutIndex];
+              if (!Number.isFinite(corteValue) || corteValue <= 0) {
+                return;
+              }
+
+              const isEvenLayer = pairIndex % 2 === 0;
+              if (isEvenLayer) {
+                if (pair.ancho > 0) {
+                  entries.push({ command: 'Y', measure: pair.ancho, quantity: 1 });
+                }
+                entries.push({ command: 'X', measure: corteValue, quantity: 1 });
+              } else {
+                entries.push({ command: 'U*', measure: 0, quantity: 1 });
+                entries.push({ command: 'X', measure: corteValue, quantity: 1 });
+                if (pair.ancho > 0) {
+                  entries.push({ command: 'U', measure: pair.ancho, quantity: 1 });
+                }
+              }
+            });
+          }
+        }
       }
     }
   }
