@@ -103,7 +103,7 @@ function collectRigheEntriesFromPlan(plan) {
 
       const sobrantePairs = Array.isArray(phase.sobrante) ? phase.sobrante : [];
       if (sobrantePairs.length) {
-        entries.push({ command: 'X*', measure: 0, quantity: 1 });
+        entries.push({ command: 'X*', measure: 0, quantity: 0 });
 
         const normalizedPairs = sobrantePairs.map((sobrante) => {
           const ancho = toPositiveNumber(sobrante?.ancho_u);
@@ -113,9 +113,11 @@ function collectRigheEntriesFromPlan(plan) {
           return { ancho, cortes };
         }).filter((pair) => pair.cortes.length);
 
-        if (normalizedPairs.length) {
-          const maxCuts = Math.max(...normalizedPairs.map((pair) => pair.cortes.length));
+        const cutLengths = normalizedPairs.map((pair) => pair.cortes.length);
+        const allPairsHaveSameCutCount = cutLengths.length > 1 && cutLengths.every((len) => len === cutLengths[0]);
 
+        if (allPairsHaveSameCutCount) {
+          const maxCuts = Math.max(...cutLengths);
           for (let cutIndex = 0; cutIndex < maxCuts; cutIndex++) {
             normalizedPairs.forEach((pair, pairIndex) => {
               const corteValue = pair.cortes[cutIndex];
@@ -130,7 +132,7 @@ function collectRigheEntriesFromPlan(plan) {
                 }
                 entries.push({ command: 'X', measure: corteValue, quantity: 1 });
               } else {
-                entries.push({ command: 'U*', measure: 0, quantity: 1 });
+                entries.push({ command: 'U*', measure: 0, quantity: 0 });
                 entries.push({ command: 'X', measure: corteValue, quantity: 1 });
                 if (pair.ancho > 0) {
                   entries.push({ command: 'U', measure: pair.ancho, quantity: 1 });
@@ -138,6 +140,15 @@ function collectRigheEntriesFromPlan(plan) {
               }
             });
           }
+        } else {
+          normalizedPairs.forEach((pair) => {
+            if (pair.ancho > 0) {
+              entries.push({ command: 'Y', measure: pair.ancho, quantity: 1 });
+            }
+            pair.cortes.forEach((corteValue) => {
+              entries.push({ command: 'X', measure: corteValue, quantity: 1 });
+            });
+          });
         }
       }
     }
@@ -9173,7 +9184,10 @@ function padMeasure(value) {
 }
 
 function formatRigheLine(lineNumber, command, measure, quantity = 1) {
-  const qty = Number.isFinite(quantity) && quantity > 0 ? Math.round(quantity) : 1;
+  const parsedQty = Number(quantity);
+  let qty = Number.isFinite(parsedQty) ? Math.round(parsedQty) : 1;
+  if (!Number.isFinite(qty)) qty = 1;
+  if (qty < 0) qty = 0;
   const commandColumn = `${command},`;
   const measureColumn = padMeasure(measure);
   return `${lineNumber}=${commandColumn}${measureColumn},${qty},0.000000,0.000000,0.000000,0.000000`;
@@ -9641,242 +9655,238 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
   const placements = plate.getPlacedPiecesWithCoords();
   if (!Array.isArray(placements) || placements.length === 0) return null;
 
-  // La lógica para RU se ha eliminado para enfocarse en X -> U
-  const userRefilo = Number(uiTrim.mm) || 0; 
+  const userRefilo = Number(uiTrim.mm) || 0;
 
-  // --- Helper Functions and Constants ---
   function numbersAlmostEqual(a, b, tolerance = 0.01) { return Math.abs(Number(a) - Number(b)) < tolerance; }
   const WIDTH_TOLERANCE = 0.05;
   const POSITION_TOLERANCE = 0.05;
-  const kerfValue = 5; 
+  const kerfValue = 5;
   const franjasMap = new Map();
 
-  // 1. Group pieces into candidate "Franjas" (by 'x' and 'width')
-  for (const placement of placements) {
-      const largo = Number(placement?.width); const alto = Number(placement?.height); const x = Number(placement?.x); const y = Number(placement?.y);
-      if (!Number.isFinite(largo) || largo <= 0 || !Number.isFinite(alto) || alto <= 0 || !Number.isFinite(x) || !Number.isFinite(y)) { continue; }
-      
-      let key = Array.from(franjasMap.keys()).find(k => 
-          numbersAlmostEqual(k.largo, largo, WIDTH_TOLERANCE) && 
-          numbersAlmostEqual(k.x, x, POSITION_TOLERANCE)
-      );
-      if (key === undefined) { 
-          key = { largo: largo, x: x }; 
-          franjasMap.set(key, { largo: largo, x: x, placements: [], isSobrante: false }); 
+  function startsAfterWithKerf(previousEnd, nextStart) {
+    if (!Number.isFinite(previousEnd) || !Number.isFinite(nextStart)) return false;
+    const expectedStart = previousEnd + kerfValue;
+    return nextStart >= previousEnd - kerfValue &&
+      nextStart <= expectedStart + kerfValue + POSITION_TOLERANCE;
+  }
+
+  function rangesOverlap(minA, maxA, minB, maxB, tolerance = POSITION_TOLERANCE) {
+    if (!Number.isFinite(minA) || !Number.isFinite(maxA) || !Number.isFinite(minB) || !Number.isFinite(maxB)) {
+      return false;
+    }
+    return minA <= maxB + tolerance && maxA >= minB - tolerance;
+  }
+
+  function buildUVGroupsFromFranja(targetFranja) {
+    if (!targetFranja || !Array.isArray(targetFranja.placements) || targetFranja.placements.length === 0) {
+      return null;
+    }
+
+    targetFranja.placements.sort((a, b) => a.y - b.y);
+    const uvGroups = [];
+
+    for (const placement of targetFranja.placements) {
+      const candidateHeight = Number(placement?.height);
+      const candidateWidth = Number(placement?.width);
+
+      if (!Number.isFinite(candidateHeight) || candidateHeight <= 0 ||
+          !Number.isFinite(candidateWidth) || candidateWidth <= 0) {
+        return null;
       }
-      franjasMap.get(key).placements.push({ x, y, width: largo, height: alto });
+
+      let group = null;
+      for (let gIdx = 0; gIdx < uvGroups.length; gIdx++) {
+        if (numbersAlmostEqual(uvGroups[gIdx].ancho_u, candidateHeight, WIDTH_TOLERANCE)) {
+          group = uvGroups[gIdx];
+          break;
+        }
+      }
+
+      if (!group) {
+        group = { ancho_u: candidateHeight, cortes_v: [] };
+        uvGroups.push(group);
+      }
+
+      group.cortes_v.push(candidateWidth);
+    }
+
+    return uvGroups.length ? uvGroups : null;
+  }
+
+  function mergeUVGroups(target, incomingGroups) {
+    for (const group of incomingGroups) {
+      let matchedPair = null;
+      for (let idx = target.length - 1; idx >= 0; idx--) {
+        if (numbersAlmostEqual(target[idx].ancho_u, group.ancho_u, WIDTH_TOLERANCE)) {
+          matchedPair = target[idx];
+          break;
+        }
+      }
+
+      if (matchedPair) {
+        matchedPair.cortes_v.push(...group.cortes_v);
+      } else {
+        target.push({
+          ancho_u: group.ancho_u,
+          cortes_v: group.cortes_v.slice()
+        });
+      }
+    }
+  }
+
+  function areHorizontallyAdjacent(base, candidate) {
+    if (!numbersAlmostEqual(base.topY, candidate.topY, POSITION_TOLERANCE)) return false;
+    const startsToRight = startsAfterWithKerf(base.rightX, candidate.leftX);
+    const startsToLeft = startsAfterWithKerf(candidate.rightX, base.leftX);
+    const overlapsOnX = rangesOverlap(base.leftX, base.rightX, candidate.leftX, candidate.rightX, POSITION_TOLERANCE);
+    return startsToRight || startsToLeft || overlapsOnX;
+  }
+
+  function areVerticallyAdjacent(base, candidate) {
+    const sameX = numbersAlmostEqual(base.leftX, candidate.leftX, POSITION_TOLERANCE);
+    return sameX && startsAfterWithKerf(base.bottomY, candidate.topY);
+  }
+
+  // 1. Group pieces into candidate franjas (by x and width)
+  for (const placement of placements) {
+    const largo = Number(placement?.width);
+    const alto = Number(placement?.height);
+    const x = Number(placement?.x);
+    const y = Number(placement?.y);
+    if (!Number.isFinite(largo) || largo <= 0 ||
+        !Number.isFinite(alto) || alto <= 0 ||
+        !Number.isFinite(x) || !Number.isFinite(y)) {
+      continue;
+    }
+
+    let key = Array.from(franjasMap.keys()).find((k) =>
+      numbersAlmostEqual(k.largo, largo, WIDTH_TOLERANCE) &&
+      numbersAlmostEqual(k.x, x, POSITION_TOLERANCE)
+    );
+
+    if (!key) {
+      key = { largo, x };
+      franjasMap.set(key, { largo, x, placements: [], isSobrante: false });
+    }
+
+    franjasMap.get(key).placements.push({ x, y, width: largo, height: alto });
   }
 
   if (franjasMap.size === 0) return null;
 
-  // 2. Sort candidate franjas by 'x' then 'y' of first piece
+  // 2. Sort candidate franjas by x and then by first y
   const sortedFranjas = Array.from(franjasMap.values()).sort((a, b) => {
-      const firstPieceAY = a.placements[0]?.y ?? Infinity; 
-      const firstPieceBY = b.placements[0]?.y ?? Infinity;
-      return a.x - b.x || firstPieceAY - firstPieceBY;
+    const firstPieceAY = a.placements[0]?.y ?? Infinity;
+    const firstPieceBY = b.placements[0]?.y ?? Infinity;
+    return a.x - b.x || firstPieceAY - firstPieceBY;
   });
 
   const finalPhases = [];
 
-  // 3. Create final Phases with CORRECCIÓN de Sobrante
+  // 3. Create final phases
   for (let i = 0; i < sortedFranjas.length; i++) {
-      const franja = sortedFranjas[i];
-      
-      // CRÍTICO: Si ya fue marcado como sobrante de una fase anterior, la saltamos.
-      if (franja.isSobrante) continue; 
+    const franja = sortedFranjas[i];
+    if (franja.isSobrante) continue;
 
-      franja.placements.sort((a, b) => a.y - b.y);
-      const cortesU = franja.placements.map(p => p.height);
-      let currentMainFranjaBottomY = 0;
-      if (franja.placements.length > 0) {
-          currentMainFranjaBottomY = franja.placements[franja.placements.length - 1].y + franja.placements[franja.placements.length - 1].height;
-      } else {
-          continue;
+    franja.placements.sort((a, b) => a.y - b.y);
+    if (!franja.placements.length) continue;
+
+    const cortesU = franja.placements.map((p) => p.height);
+    const mainFirstPlacement = franja.placements[0];
+    const mainLastPlacement = franja.placements[franja.placements.length - 1];
+    const mainTopY = Number(mainFirstPlacement?.y);
+    const mainBottomY = Number(mainLastPlacement?.y) + Number(mainLastPlacement?.height);
+
+    const combinedUVPairs = [];
+    const candidateInfos = [];
+
+    for (let j = i + 1; j < sortedFranjas.length; j++) {
+      const potentialSobranteFranja = sortedFranjas[j];
+      if (potentialSobranteFranja.isSobrante) continue;
+
+      const potentialUVGroups = buildUVGroupsFromFranja(potentialSobranteFranja);
+      if (!potentialUVGroups) continue;
+
+      const firstPlacement = potentialSobranteFranja.placements[0];
+      const lastPlacement = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1];
+      const topY = Number(firstPlacement?.y);
+      const bottomY = Number(lastPlacement?.y) + Number(lastPlacement?.height);
+      const leftX = Number(firstPlacement?.x ?? potentialSobranteFranja.x);
+      const rightX = Number.isFinite(leftX) ? leftX + Number(potentialSobranteFranja.largo) : NaN;
+
+      if (!Number.isFinite(topY) || !Number.isFinite(bottomY) ||
+          !Number.isFinite(leftX) || !Number.isFinite(rightX)) {
+        continue;
       }
 
-      let sobranteData = null;
-      let firstSobranteY = -1; 
-      // 💥 NUEVA ESTRUCTURA: Almacenará [{ ancho_u: 234, cortes_v: [390] }, { ancho_u: 130, cortes_v: [502] }]
-      const combinedUVPairs = []; 
-      let lastProcessedBottomY = currentMainFranjaBottomY; 
-      
-
-      // --- BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
-      for (let j = i + 1; j < sortedFranjas.length; j++) {
-          const potentialSobranteFranja = sortedFranjas[j];
-          if (potentialSobranteFranja.isSobrante) continue;
-          
-          const firstPieceY = potentialSobranteFranja.placements[0]?.y;
-          const candidateTopY = Number(firstPieceY);
-          const candidateTotalHeight = potentialSobranteFranja.placements.reduce((sum, placement) => {
-            const h = Number(placement?.height);
-            return Number.isFinite(h) && h > 0 ? sum + h : sum;
-          }, 0);
-          const candidateBottomY = Number.isFinite(candidateTopY) ? candidateTopY + candidateTotalHeight : NaN;
-          const mainTopY = franja.placements[0]?.y ?? 0;
-          const mainBottomY = currentMainFranjaBottomY;
-          
-          // 3. Verificar estructura V* (alto uniforme)
-          potentialSobranteFranja.placements.sort((a, b) => a.y - b.y);
-            const potentialUVGroups = [];
-            let groupsValid = true;
-
-            for (const placement of potentialSobranteFranja.placements) {
-              const candidateHeight = Number(placement?.height);
-              const candidateWidth = Number(placement?.width);
-
-              if (!Number.isFinite(candidateHeight) || candidateHeight <= 0 ||
-                !Number.isFinite(candidateWidth) || candidateWidth <= 0) {
-                groupsValid = false;
-                break;
-              }
-
-              let group = null;
-              for (let gIdx = 0; gIdx < potentialUVGroups.length; gIdx++) {
-                if (numbersAlmostEqual(potentialUVGroups[gIdx].ancho_u, candidateHeight, WIDTH_TOLERANCE)) {
-                  group = potentialUVGroups[gIdx];
-                  break;
-                }
-              }
-
-              if (!group) {
-                group = { ancho_u: candidateHeight, cortes_v: [] };
-                potentialUVGroups.push(group);
-              }
-
-              group.cortes_v.push(candidateWidth);
-            }
-
-            if (!groupsValid || !potentialUVGroups.length) {
-              break; 
-            }
-          
-          const isFirstSobrante = (combinedUVPairs.length === 0);
-          
-
-          if (isFirstSobrante) {
-              // --- LÓGICA PARA EL *PRIMER* SOBRANTE ---
-                const similarLargo = numbersAlmostEqual(franja.largo, potentialSobranteFranja.largo, WIDTH_TOLERANCE);
-                const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
-                const expectedY = lastProcessedBottomY + kerfValue;
-                const startsBelow = firstPieceY !== undefined &&
-                  (firstPieceY >= lastProcessedBottomY - kerfValue && firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
-                const overlapsCurrentFranja = Number.isFinite(candidateTopY) && Number.isFinite(candidateBottomY) &&
-                  candidateTopY <= mainBottomY + POSITION_TOLERANCE &&
-                  candidateBottomY >= mainTopY - POSITION_TOLERANCE;
-
-              console.log(`[DEBUG_RIGHE]    - Condición: !similarLargo=${!similarLargo}, similarX=${similarX}, startsBelow=${startsBelow}`);
-
-                if (!similarLargo && similarX && (startsBelow || overlapsCurrentFranja)) {
-                  // Es el primer sobrante V* válido
-                  firstSobranteY = firstPieceY; // Se usa para la Opción H subsecuente
-                  
-                  // 💥 ALMACENAR COMO PAR U/V
-                  potentialUVGroups.forEach(group => {
-                    combinedUVPairs.push({
-                      ancho_u: group.ancho_u,
-                      cortes_v: group.cortes_v.slice()
-                    });
-                  });
-                  potentialSobranteFranja.isSobrante = true; 
-                  lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
-                                         potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
-                  console.log(`[DEBUG_RIGHE]    - ✅ ACUMULADO como PRIMER SOBRANTE`);
-                  continue; 
-              } else {
-                  console.log(`[DEBUG_RIGHE]    - ❌ NO ACUMULADO como Primer Sobrante. BREAK.`);
-                  break;
-              }
-
-          } else {
-              // --- LÓGICA PARA SOBRANTES *SUBSECUENTES* ---
-              
-              // OPCIÓN 1: Apilado Verticalmente (RELAJADO)
-              const similarX = numbersAlmostEqual(franja.x, potentialSobranteFranja.x, POSITION_TOLERANCE);
-              const expectedY = lastProcessedBottomY + kerfValue;
-              const startsBelow_Vertical_Relaxed = firstPieceY !== undefined &&
-                  (firstPieceY >= lastProcessedBottomY - kerfValue && 
-                   firstPieceY <= expectedY + kerfValue + POSITION_TOLERANCE);
-                   
-              // OPCIÓN 2: Agrupado Horizontalmente 
-              const startsAtSameY_Horizontal = numbersAlmostEqual(firstSobranteY, firstPieceY, POSITION_TOLERANCE);
-
-              if (similarX && startsBelow_Vertical_Relaxed || startsAtSameY_Horizontal) {
-                  
-                    potentialUVGroups.forEach(group => {
-                      let matchedPair = null;
-                      for (let idx = combinedUVPairs.length - 1; idx >= 0; idx--) {
-                        if (numbersAlmostEqual(combinedUVPairs[idx].ancho_u, group.ancho_u, WIDTH_TOLERANCE)) {
-                          matchedPair = combinedUVPairs[idx];
-                          break;
-                        }
-                      }
-
-                      if (matchedPair) {
-                        matchedPair.cortes_v.push(...group.cortes_v);
-                      } else {
-                        combinedUVPairs.push({
-                          ancho_u: group.ancho_u,
-                          cortes_v: group.cortes_v.slice()
-                        });
-                      }
-                    });
-                  
-                  potentialSobranteFranja.isSobrante = true;
-                  
-                  // Solo actualizar lastProcessedBottomY si es apilamiento vertical
-                  if (similarX && startsBelow_Vertical_Relaxed) {
-                      lastProcessedBottomY = potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].y + 
-                                             potentialSobranteFranja.placements[potentialSobranteFranja.placements.length - 1].height;
-                  }
-                  
-                  continue; 
-              }
-          }
-          
-          break; // Rompe si no se cumple ninguna condición.
-      } // --- FIN BUCLE DE ACUMULACIÓN DE SOBRANTES (j) ---
-
-
-      // 4. Add the main phase
-      
-      if (combinedUVPairs.length > 0) {
-          sobranteData = combinedUVPairs; // 💥 Almacenar el arreglo de pares
-      }
-
-      // *** Asignación de RU - (Se asume que la regla es SI HAY CORTES U, se aplica RU, y no se anula por V*) ***
-      //const phaseRefiloU = (Array.isArray(cortesU) && cortesU.length > 0) ? userRefilo : 0;
-
-      // ----------------------------------------------------------------------
-      // 💥 CORRECCIÓN FINAL PARA RU: Anular RU si hay Sobrante V*
-      // ----------------------------------------------------------------------
-      const tieneCortesU = Array.isArray(cortesU) && cortesU.length > 0;
-      const tieneSobranteVstar = !!sobranteData; // Es true si combinedUVPairs.length > 0
-
-      let phaseRefiloU = 0;
-
-      if (tieneCortesU) {
-          
-              // Regla 2 (Ejemplo 2, Fases que terminan sin V*):
-              // Si hay cortes U y la fase termina normalmente (sin V*), se aplica el RU.
-              // Esto cubre las fases 1, 3, 4, 5 de tu segundo ejemplo.
-              phaseRefiloU = userRefilo;
-         
-      }
-      
-      finalPhases.push({
-          kind: 'horizontal',
-          largo: franja.largo,
-          cantidad: 1,
-          refiloU: phaseRefiloU,
-          cortesU: cortesU,
-          sobrante: sobranteData
+      candidateInfos.push({
+        index: j,
+        franja: potentialSobranteFranja,
+        uvGroups: potentialUVGroups,
+        topY,
+        bottomY,
+        leftX,
+        rightX
       });
-      
-      // 💥 LOG FINAL PARA REVISAR LA ESTRUCTURA GENERADA
-      console.log(`[DEBUG_RIGHE] Fase ${i} Finalizada. SobranteData Generado:`, sobranteData);
+    }
 
-  } // End main loop (i)
+    const seedCandidate = candidateInfos.find((candidate) => {
+      const similarLargo = numbersAlmostEqual(franja.largo, candidate.franja.largo, WIDTH_TOLERANCE);
+      const similarX = numbersAlmostEqual(franja.x, candidate.franja.x, POSITION_TOLERANCE);
+      const startsBelowMain = startsAfterWithKerf(mainBottomY, candidate.topY);
+      const overlapsMain = rangesOverlap(mainTopY, mainBottomY, candidate.topY, candidate.bottomY, POSITION_TOLERANCE);
+      return !similarLargo && similarX && (startsBelowMain || overlapsMain);
+    });
+
+    if (seedCandidate) {
+      const selectedCandidates = [seedCandidate];
+      const selectedIndexes = new Set([seedCandidate.index]);
+
+      let changed = true;
+      while (changed) {
+        changed = false;
+
+        for (const candidate of candidateInfos) {
+          if (selectedIndexes.has(candidate.index)) continue;
+
+          let attachesToSelection = false;
+          for (const selected of selectedCandidates) {
+            if (areVerticallyAdjacent(selected, candidate) || areHorizontallyAdjacent(selected, candidate)) {
+              attachesToSelection = true;
+              break;
+            }
+          }
+
+          if (!attachesToSelection) continue;
+
+          selectedIndexes.add(candidate.index);
+          selectedCandidates.push(candidate);
+          changed = true;
+        }
+      }
+      selectedCandidates.sort((a, b) => a.index - b.index);
+
+      for (const selected of selectedCandidates) {
+        mergeUVGroups(combinedUVPairs, selected.uvGroups);
+        selected.franja.isSobrante = true;
+      }
+    }
+
+    const sobranteData = combinedUVPairs.length > 0 ? combinedUVPairs : null;
+    const tieneCortesU = Array.isArray(cortesU) && cortesU.length > 0;
+    const phaseRefiloU = tieneCortesU ? userRefilo : 0;
+
+    finalPhases.push({
+      kind: 'horizontal',
+      largo: franja.largo,
+      cantidad: 1,
+      refiloU: phaseRefiloU,
+      cortesU,
+      sobrante: sobranteData
+    });
+
+    console.log(`[DEBUG_RIGHE] Fase ${i} Finalizada. SobranteData Generado:`, sobranteData);
+  }
 
   const refiloInicial = determineInitialRefilo({
     orientation: 'horizontal',
