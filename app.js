@@ -115,8 +115,10 @@ function collectRigheEntriesFromPlan(plan) {
 
         const cutLengths = normalizedPairs.map((pair) => pair.cortes.length);
         const allPairsHaveSameCutCount = cutLengths.length > 1 && cutLengths.every((len) => len === cutLengths[0]);
+        const hasMultiCutPairs = normalizedPairs.some((pair) => pair.cortes.length > 1);
+        const useAlternatingColumnsMode = normalizedPairs.length === 2 && allPairsHaveSameCutCount && hasMultiCutPairs;
 
-        if (allPairsHaveSameCutCount) {
+        if (useAlternatingColumnsMode) {
           const maxCuts = Math.max(...cutLengths);
           for (let cutIndex = 0; cutIndex < maxCuts; cutIndex++) {
             normalizedPairs.forEach((pair, pairIndex) => {
