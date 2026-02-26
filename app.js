@@ -94,17 +94,195 @@ function collectRigheEntriesFromPlan(plan) {
         entries.push({ command: 'RY', measure: refiloU, quantity: 1 });
       }
 
-      (Array.isArray(phase.cortesU) ? phase.cortesU : []).forEach((corte) => {
-        const corteValue = toPositiveNumber(corte);
-        if (corteValue > 0) {
-          entries.push({ command: 'Y', measure: corteValue, quantity: 1 });
+      const cortesUList = (Array.isArray(phase.cortesU) ? phase.cortesU : [])
+        .map((corte) => toPositiveNumber(corte))
+        .filter((corteValue) => corteValue > 0);
+
+      const emitCutsU = (startIdx, endIdx) => {
+        for (let idx = startIdx; idx < endIdx; idx++) {
+          const corteValue = cortesUList[idx];
+          if (corteValue > 0) {
+            entries.push({ command: 'Y', measure: corteValue, quantity: 1 });
+          }
         }
-      });
+      };
+
+      const hasColumnMetadata = Array.isArray(phase.sobranteColumns) && phase.sobranteColumns.length > 0;
+      const requestedSplit = Number.parseInt(phase.cortesUSplitIndex, 10);
+      const cortesUSplitIndex = hasColumnMetadata && Number.isFinite(requestedSplit) && requestedSplit > 0 && requestedSplit < cortesUList.length
+        ? requestedSplit
+        : cortesUList.length;
+
+      emitCutsU(0, cortesUSplitIndex);
 
       const sobrantePairs = Array.isArray(phase.sobrante) ? phase.sobrante : [];
       if (sobrantePairs.length) {
         entries.push({ command: 'X*', measure: 0, quantity: 0 });
 
+        const normalizedColumns = (Array.isArray(phase.sobranteColumns) ? phase.sobranteColumns : [])
+          .map((column, columnIndex) => {
+            const x = toPositiveNumber(column?.x_u);
+            const rows = (Array.isArray(column?.rows) ? column.rows : [])
+              .map((row, rowIndex) => {
+                const ancho = toPositiveNumber(row?.ancho_u);
+                const top = Number(row?.top_y);
+                const cortes = (Array.isArray(row?.cortes_v) ? row.cortes_v : [])
+                  .map((value) => toPositiveNumber(value))
+                  .filter((value) => value > 0);
+                return {
+                  ancho,
+                  top: Number.isFinite(top) ? top : null,
+                  cortes,
+                  rowIndex
+                };
+              })
+              .filter((row) => row.ancho > 0 && row.cortes.length > 0)
+              .sort((a, b) => {
+                const aTop = Number.isFinite(a.top) ? a.top : Number.POSITIVE_INFINITY;
+                const bTop = Number.isFinite(b.top) ? b.top : Number.POSITIVE_INFINITY;
+                if (aTop !== bTop) return aTop - bTop;
+                return a.rowIndex - b.rowIndex;
+              });
+            return { x, rows, columnIndex };
+          })
+          .filter((column) => column.rows.length > 0)
+          .sort((a, b) => {
+            if (a.x !== b.x) return a.x - b.x;
+            return a.columnIndex - b.columnIndex;
+          });
+
+        if (normalizedColumns.length) {
+          const rowsAlmostEqual = (a, b, tolerance = 0.05) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= tolerance;
+          const primaryColumn = normalizedColumns[0];
+          const secondaryColumns = normalizedColumns.slice(1);
+
+          const primaryRows = primaryColumn.rows.map((row, rowOrder) => ({ ...row, rowOrder }));
+          const secondaryRows = [];
+          secondaryColumns.forEach((column, columnIdx) => {
+            column.rows.forEach((row, rowIdx) => {
+              secondaryRows.push({
+                ...row,
+                columnX: column.x,
+                columnIndex: columnIdx,
+                rowIdx,
+                consumed: false
+              });
+            });
+          });
+
+          const emitSecondaryRows = (rowsToEmit) => {
+            if (!rowsToEmit.length) return;
+            entries.push({ command: 'U*', measure: 0, quantity: 0 });
+            rowsToEmit.forEach((row) => {
+              row.cortes.forEach((corteValue) => {
+                entries.push({ command: 'X', measure: corteValue, quantity: 1 });
+                entries.push({ command: 'U', measure: row.ancho, quantity: 1 });
+              });
+            });
+          };
+
+          const canUseTopAwareFlow =
+            primaryRows.length > 0 &&
+            secondaryRows.length > 0 &&
+            primaryRows.every((row) => Number.isFinite(row.top)) &&
+            secondaryRows.every((row) => Number.isFinite(row.top));
+
+          if (canUseTopAwareFlow) {
+            primaryRows.forEach((primaryRow, primaryIndex) => {
+              entries.push({ command: 'Y', measure: primaryRow.ancho, quantity: 1 });
+
+              const primaryCuts = primaryRow.cortes.map((value, cutIdx) => ({
+                value,
+                x: primaryColumn.x,
+                order: cutIdx
+              }));
+
+              secondaryRows.forEach((row) => {
+                if (row.consumed) return;
+                const sameTop = rowsAlmostEqual(row.top, primaryRow.top);
+                const sameHeight = rowsAlmostEqual(row.ancho, primaryRow.ancho);
+                if (!sameTop || !sameHeight) return;
+
+                row.cortes.forEach((value, cutIdx) => {
+                  primaryCuts.push({
+                    value,
+                    x: row.columnX,
+                    order: cutIdx
+                  });
+                });
+                row.consumed = true;
+              });
+
+              primaryCuts
+                .sort((a, b) => {
+                  if (a.x !== b.x) return a.x - b.x;
+                  return a.order - b.order;
+                })
+                .forEach((cut) => {
+                  entries.push({ command: 'X', measure: cut.value, quantity: 1 });
+                });
+
+              const nextPrimaryTop = (primaryIndex + 1 < primaryRows.length && Number.isFinite(primaryRows[primaryIndex + 1].top))
+                ? primaryRows[primaryIndex + 1].top
+                : Number.POSITIVE_INFINITY;
+
+              const nestedRows = secondaryRows
+                .filter((row) => !row.consumed &&
+                  row.top >= primaryRow.top - 0.05 &&
+                  row.top < nextPrimaryTop - 0.05)
+                .sort((a, b) => {
+                  if (a.top !== b.top) return a.top - b.top;
+                  if (a.columnX !== b.columnX) return a.columnX - b.columnX;
+                  return a.rowIdx - b.rowIdx;
+                });
+
+              nestedRows.forEach((row) => { row.consumed = true; });
+              emitSecondaryRows(nestedRows);
+            });
+
+            const remainingSecondaryRows = secondaryRows
+              .filter((row) => !row.consumed)
+              .sort((a, b) => {
+                if (a.top !== b.top) return a.top - b.top;
+                if (a.columnX !== b.columnX) return a.columnX - b.columnX;
+                return a.rowIdx - b.rowIdx;
+              });
+            emitSecondaryRows(remainingSecondaryRows);
+          } else {
+            const firstSecondaryRows = secondaryColumns[0]?.rows || [];
+            const canInterleavePrimarySecondary =
+              secondaryColumns.length === 1 &&
+              primaryRows.length === 1 &&
+              firstSecondaryRows.length === 1 &&
+              primaryRows[0].cortes.length > 1 &&
+              primaryRows[0].cortes.length === firstSecondaryRows[0].cortes.length;
+
+            if (canInterleavePrimarySecondary) {
+              const primaryRow = primaryRows[0];
+              const secondaryRow = firstSecondaryRows[0];
+              for (let cutIndex = 0; cutIndex < primaryRow.cortes.length; cutIndex++) {
+                entries.push({ command: 'Y', measure: primaryRow.ancho, quantity: 1 });
+                entries.push({ command: 'X', measure: primaryRow.cortes[cutIndex], quantity: 1 });
+                entries.push({ command: 'U*', measure: 0, quantity: 0 });
+                entries.push({ command: 'X', measure: secondaryRow.cortes[cutIndex], quantity: 1 });
+                entries.push({ command: 'U', measure: secondaryRow.ancho, quantity: 1 });
+              }
+            } else {
+              primaryRows.forEach((row) => {
+                entries.push({ command: 'Y', measure: row.ancho, quantity: 1 });
+                row.cortes.forEach((corteValue) => {
+                  entries.push({ command: 'X', measure: corteValue, quantity: 1 });
+                });
+              });
+
+              const flattenedSecondaryRows = [];
+              secondaryColumns.forEach((column) => {
+                column.rows.forEach((row) => flattenedSecondaryRows.push(row));
+              });
+              emitSecondaryRows(flattenedSecondaryRows);
+            }
+          }
+        } else {
         const normalizedPairs = sobrantePairs.map((sobrante) => {
           const ancho = toPositiveNumber(sobrante?.ancho_u);
           const cortes = (Array.isArray(sobrante?.cortes_v) ? sobrante.cortes_v : [])
@@ -152,7 +330,10 @@ function collectRigheEntriesFromPlan(plan) {
             });
           });
         }
+        }
       }
+
+      emitCutsU(cortesUSplitIndex, cortesUList.length);
     }
   }
 
@@ -288,6 +469,8 @@ let deferredRecalcTimer = null;
 let solverCache = new Map();
 let cacheVersion = 0;
 let lastSuccessfulSolution = null; // Cache de emergencia
+let pendingSavedSolutionForNextSolve = null;
+let pendingSavedSolutionRetryCount = 0;
 let forceStopSolver = false;
 let reuseComparisonHash = null;
 let reuseComparisonResult = null;
@@ -810,6 +993,8 @@ function shouldUsePerformanceMode() {
 
 function invalidateSolverCache() {
   cacheVersion++;
+  pendingSavedSolutionForNextSolve = null;
+  pendingSavedSolutionRetryCount = 0;
   // Limpiar cache si crece mucho
   if (solverCache.size > 10) {
     solverCache.clear();
@@ -2783,6 +2968,37 @@ async function solveCutLayoutInternal() {
 
   console.log('🔍 Iniciando solveCutLayoutInternal con', inputs.pieces.length, 'piezas');
 
+  // Priorizar una solución cargada desde JSON en el primer solve posterior a loadState.
+  if (pendingSavedSolutionForNextSolve) {
+    const candidate = normalizeSavedSolution(pendingSavedSolutionForNextSolve);
+    if (candidate) {
+      const placedCount = Array.isArray(candidate.placements) ? candidate.placements.length : 0;
+      const leftoverCount = Array.isArray(candidate.leftoverPieces) ? candidate.leftoverPieces.length : 0;
+      const candidateTotal = placedCount + leftoverCount;
+
+      if (!Number.isFinite(inputs.totalRequested) || inputs.totalRequested === candidateTotal) {
+        console.log('💾 Usando solución cargada desde JSON (prioridad de carga).');
+        pendingSavedSolutionForNextSolve = null;
+        pendingSavedSolutionRetryCount = 0;
+        lastSuccessfulSolution = candidate;
+        return candidate;
+      }
+
+      pendingSavedSolutionRetryCount += 1;
+      console.warn('⚠️ Solución JSON aún no aplicada: totalRequested no coincide en este intento.', {
+        attempt: pendingSavedSolutionRetryCount,
+        expected: inputs.totalRequested,
+        candidateTotal
+      });
+
+      if (pendingSavedSolutionRetryCount >= 5) {
+        console.warn('⚠️ Se descarta solución JSON pendiente tras 5 intentos sin coincidencia.');
+        pendingSavedSolutionForNextSolve = null;
+        pendingSavedSolutionRetryCount = 0;
+      }
+    }
+  }
+
   const cacheKey = getCacheKey(inputs.instances, inputs.pieces, {
     kerf: inputs.kerf,
     allowAutoRotate: inputs.allowAutoRotate
@@ -4089,7 +4305,7 @@ function makePlateRow(options = {}) {
   return row;
 }
 
-function applyPlatesGate() {
+function applyPlatesGate({ skipRecalc = false } = {}) {
   const enabled = isSheetComplete();
   const autoEnabled = !!(autoRotateToggle && autoRotateToggle.checked);
   getRows().forEach((r) => {
@@ -4098,7 +4314,9 @@ function applyPlatesGate() {
   });
   updateMaterialDropdownState();
   toggleAddButton();
-  scheduleLayoutRecalc({ priority: 'high' });
+  if (!skipRecalc) {
+    scheduleLayoutRecalc({ priority: 'high' });
+  }
   ensureKerfField();
   toggleActionButtons(enabled);
   persistState && persistState();
@@ -4505,7 +4723,212 @@ function clearAllPlates() {
   ensureKerfField();
 }
 
+function toFinitePositive(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
+function normalizeSavedSolution(savedSolution) {
+  if (!savedSolution || typeof savedSolution !== 'object') {
+    return null;
+  }
+
+  const normalizedInstances = (Array.isArray(savedSolution.instances) ? savedSolution.instances : [])
+    .map((instance, idx) => {
+      if (!instance || typeof instance !== 'object') return null;
+
+      const sw = toFinitePositive(instance.sw, toFinitePositive(instance.width, 0));
+      const sh = toFinitePositive(instance.sh, toFinitePositive(instance.height, 0));
+      if (sw <= 0 || sh <= 0) return null;
+
+      const trim = instance.trim && typeof instance.trim === 'object' ? instance.trim : {};
+      const trimMm = toFinitePositive(trim.mm, 0);
+
+      return {
+        ...instance,
+        id: instance.id || `plate-${idx}`,
+        sw,
+        sh,
+        width: sw,
+        height: sh,
+        trim: {
+          mm: trimMm,
+          top: !!trim.top,
+          right: !!trim.right,
+          bottom: !!trim.bottom,
+          left: !!trim.left
+        }
+      };
+    })
+    .filter(Boolean);
+
+  if (!normalizedInstances.length) {
+    return null;
+  }
+
+  const normalizePlacement = (placement, plateIdx, indexInPlate) => {
+    if (!placement || typeof placement !== 'object') return null;
+
+    const piece = placement.piece && typeof placement.piece === 'object' ? { ...placement.piece } : {};
+    const rotationValue = Number.parseFloat(placement.rotation);
+    const rotated = !!(placement.rotated || placement.rot || rotationValue === 90 || rotationValue === 270);
+
+    const rawW = toFinitePositive(
+      placement.rawW,
+      toFinitePositive(piece.rawW, toFinitePositive(piece.rawWidth, toFinitePositive(piece.width, 0)))
+    );
+    const rawH = toFinitePositive(
+      placement.rawH,
+      toFinitePositive(piece.rawH, toFinitePositive(piece.rawHeight, toFinitePositive(piece.height, 0)))
+    );
+
+    const width = toFinitePositive(placement.width, toFinitePositive(placement.w, rawW));
+    const height = toFinitePositive(placement.height, toFinitePositive(placement.h, rawH));
+    if (width <= 0 || height <= 0) return null;
+
+    const parsedRowIdx = Number.parseInt(placement.rowIdx ?? piece.rowIdx ?? piece.rowIndex, 10);
+    const rowIdx = Number.isFinite(parsedRowIdx) && parsedRowIdx >= 0 ? parsedRowIdx : 0;
+
+    const normalizedPiece = {
+      ...piece,
+      id: piece.id || placement.id || `${plateIdx}-${indexInPlate}`,
+      width: toFinitePositive(piece.width, rawW || width),
+      height: toFinitePositive(piece.height, rawH || height),
+      rowIndex: Number.isFinite(Number(piece.rowIndex)) ? Number(piece.rowIndex) : rowIdx
+    };
+
+    return {
+      ...placement,
+      id: placement.id || normalizedPiece.id,
+      piece: normalizedPiece,
+      plateIdx,
+      x: Number.isFinite(Number(placement.x)) ? Number(placement.x) : 0,
+      y: Number.isFinite(Number(placement.y)) ? Number(placement.y) : 0,
+      width,
+      height,
+      w: toFinitePositive(placement.w, width),
+      h: toFinitePositive(placement.h, height),
+      rawW: toFinitePositive(placement.rawW, rawW || width),
+      rawH: toFinitePositive(placement.rawH, rawH || height),
+      rowIdx,
+      color: placement.color || normalizedPiece.color || getRowColor(rowIdx),
+      rot: typeof placement.rot === 'boolean' ? placement.rot : rotated,
+      rotated
+    };
+  };
+
+  const sourceByPlate = Array.isArray(savedSolution.placementsByPlate) ? savedSolution.placementsByPlate : [];
+  const sourceFlat = Array.isArray(savedSolution.placements) ? savedSolution.placements : [];
+
+  const inferredPlateCountFromFlat = sourceFlat.reduce((max, placement) => {
+    const plateIdx = Number.parseInt(placement?.plateIdx, 10);
+    return Number.isFinite(plateIdx) && plateIdx >= 0 ? Math.max(max, plateIdx + 1) : max;
+  }, 0);
+
+  const targetPlateCount = Math.max(
+    normalizedInstances.length,
+    sourceByPlate.length,
+    inferredPlateCountFromFlat
+  );
+
+  const placementsByPlate = Array.from({ length: targetPlateCount }, () => []);
+
+  if (sourceByPlate.length) {
+    for (let plateIdx = 0; plateIdx < targetPlateCount; plateIdx++) {
+      const platePlacements = Array.isArray(sourceByPlate[plateIdx]) ? sourceByPlate[plateIdx] : [];
+      placementsByPlate[plateIdx] = platePlacements
+        .map((placement, indexInPlate) => normalizePlacement(placement, plateIdx, indexInPlate))
+        .filter(Boolean);
+    }
+  } else if (sourceFlat.length) {
+    sourceFlat.forEach((placement, indexInFlat) => {
+      const parsedPlateIdx = Number.parseInt(placement?.plateIdx, 10);
+      const plateIdx = Number.isFinite(parsedPlateIdx) && parsedPlateIdx >= 0 ? parsedPlateIdx : 0;
+      const normalized = normalizePlacement(placement, plateIdx, indexInFlat);
+      if (normalized) {
+        while (placementsByPlate.length <= plateIdx) placementsByPlate.push([]);
+        placementsByPlate[plateIdx].push(normalized);
+      }
+    });
+  }
+
+  const placements = placementsByPlate.flat();
+  const normalizeStrategy = (value) => {
+    if (typeof value !== 'string') return null;
+    const normalized = value.toLowerCase();
+    if (normalized === 'column') return 'vertical';
+    if (normalized === 'band') return 'horizontal';
+    if (normalized === 'horizontal' || normalized === 'vertical') return normalized;
+    return null;
+  };
+
+  const globalInferredStrategy = inferLayoutStrategyFromPlacements(placements);
+
+  normalizedInstances.forEach((instance, idx) => {
+    if (!instance || typeof instance !== 'object') return;
+    const current = normalizeStrategy(instance.layoutStrategy);
+    if (current) {
+      instance.layoutStrategy = current;
+      return;
+    }
+    const inferred = globalInferredStrategy || inferLayoutStrategyFromPlacements(placementsByPlate[idx] || []);
+    if (inferred) {
+      instance.layoutStrategy = inferred;
+    }
+  });
+
+  const leftoverPieces = Array.isArray(savedSolution.leftoverPieces) ? savedSolution.leftoverPieces : [];
+
+  const totalArea = Number.isFinite(Number(savedSolution.totalArea))
+    ? Number(savedSolution.totalArea)
+    : normalizedInstances.reduce((sum, inst) => sum + (inst.sw * inst.sh), 0);
+  const usedArea = Number.isFinite(Number(savedSolution.usedArea))
+    ? Number(savedSolution.usedArea)
+    : placements.reduce((sum, placement) => sum + ((Number(placement.rawW) || 0) * (Number(placement.rawH) || 0)), 0);
+  const wasteArea = Number.isFinite(Number(savedSolution.wasteArea))
+    ? Number(savedSolution.wasteArea)
+    : Math.max(0, totalArea - usedArea);
+
+  const totalRequested = Number.isFinite(Number(savedSolution.totalRequested))
+    ? Number(savedSolution.totalRequested)
+    : placements.length + leftoverPieces.length;
+
+  const pieces = placements
+    .map((placement) => placement.piece)
+    .filter((piece) => piece && typeof piece === 'object');
+
+  return {
+    ...savedSolution,
+    instances: normalizedInstances,
+    placementsByPlate,
+    placements,
+    leftoverPieces,
+    totalRequested,
+    usedArea,
+    wasteArea,
+    totalArea,
+    pieces
+  };
+}
+
 function loadState(state) {
+  if (layoutRecalcTimer) {
+    clearTimeout(layoutRecalcTimer);
+    layoutRecalcTimer = null;
+  }
+  if (deferredRecalcTimer) {
+    clearTimeout(deferredRecalcTimer);
+    deferredRecalcTimer = null;
+  }
+  immediateRecalcNeeded = false;
+  layoutRecalcPending = false;
+
+  // Al cargar proyecto, partir de estado visual clásico para evitar que
+  // una optimización avanzada previa sobrescriba el layout guardado.
+  showingAdvancedOptimization = false;
+  currentDisplayedPlacementsByPlate = [];
+  currentDisplayedPlateSpecs = [];
+
   clearAllPlates();
   const defaultPlateWidth = getDefaultPlateWidth();
   const defaultPlateHeight = getDefaultPlateHeight();
@@ -4671,32 +5094,31 @@ function loadState(state) {
   }
 
   ensureKerfField();
-  applyPlatesGate();
 
-  if (state.savedSolution && isValidSavedSolutionWithCurrentPlates(state.savedSolution)) {
+  const normalizedSavedSolution = normalizeSavedSolution(state.savedSolution);
+  const canUseSavedSolution = !!(normalizedSavedSolution && isValidSavedSolutionWithCurrentPlates(normalizedSavedSolution));
+
+  if (canUseSavedSolution) {
     console.log('🔄 Usando solución guardada del JSON');
-    lastSuccessfulSolution = state.savedSolution;
+    lastSuccessfulSolution = normalizedSavedSolution;
+    pendingSavedSolutionForNextSolve = normalizedSavedSolution;
+    pendingSavedSolutionRetryCount = 0;
     
-    // Marcar que tenemos una solución precalculada
-    const currentPlates = getPlates(); // Usar placas actuales
-    const inputs = {
-      instances: currentPlates.map(p => ({
-        sw: p.sw,
-        sh: p.sh,
-        trim: p.trim || { mm: 0, top: false, right: false, bottom: false, left: false }
-      })),
-      pieces: collectPiecesFromState(state),
-      kerf: state.kerfMm || 0,
-      allowAutoRotate: state.autoRotate === true
-    };
-    
-    const cacheKey = getCacheKey(inputs.instances, inputs.pieces, {
-      kerf: inputs.kerf,
-      allowAutoRotate: inputs.allowAutoRotate
-    });
-    
-    solverCache.set(cacheKey, state.savedSolution);
-    
+    // Cachear usando exactamente la misma firma de entrada del solver para evitar mismatch.
+    const solverInputs = collectSolverInputs();
+    if (solverInputs) {
+      const cacheKey = getCacheKey(solverInputs.instances, solverInputs.pieces, {
+        kerf: solverInputs.kerf,
+        allowAutoRotate: solverInputs.allowAutoRotate
+      });
+      solverCache.set(cacheKey, normalizedSavedSolution);
+      savePersistentCache(cacheKey, normalizedSavedSolution);
+    }
+  }
+
+  applyPlatesGate({ skipRecalc: canUseSavedSolution });
+
+  if (canUseSavedSolution) {
     // Renderizar inmediatamente la solución guardada
     setTimeout(() => {
       console.log('🔍 DEBUG: Iniciando renderizado de solución guardada...');
@@ -4705,7 +5127,7 @@ function loadState(state) {
       updateCNCButtonState();
     }, 100);
   } else if (state.savedSolution) {
-    console.log('❌ Solución guardada no es válida con placas actuales, recalculando...');
+    console.log('❌ Solución guardada no es válida o no se pudo normalizar, recalculando...');
   } else {
     console.log('ℹ️ No hay solución guardada en el JSON');
   }
@@ -4808,22 +5230,23 @@ function isValidSavedSolution(savedSolution, state) {
 function isValidSavedSolutionWithCurrentPlates(savedSolution) {
   console.log('🔍 DEBUG: Validando solución con placas actuales...');
   
-  if (!savedSolution || typeof savedSolution !== 'object') {
+  const normalized = normalizeSavedSolution(savedSolution);
+  if (!normalized) {
     console.log('❌ DEBUG: Solución no es un objeto válido');
     return false;
   }
   
   // Verificar que tenga la estructura correcta
   const required = ['instances', 'placements', 'placementsByPlate'];
-  const hasRequired = required.every(prop => Array.isArray(savedSolution[prop]));
+  const hasRequired = required.every(prop => Array.isArray(normalized[prop]));
   console.log('🔍 DEBUG: Verificando estructura requerida:', {
     required,
     hasAll: hasRequired,
     structure: required.map(prop => ({
       prop,
-      exists: prop in savedSolution,
-      isArray: Array.isArray(savedSolution[prop]),
-      length: savedSolution[prop]?.length
+      exists: prop in normalized,
+      isArray: Array.isArray(normalized[prop]),
+      length: normalized[prop]?.length
     }))
   });
   
@@ -4831,82 +5254,72 @@ function isValidSavedSolutionWithCurrentPlates(savedSolution) {
     console.log('❌ DEBUG: Estructura requerida faltante');
     return false;
   }
+
+  if (!normalized.instances.length) {
+    console.log('❌ DEBUG: No hay instancias normalizadas en savedSolution');
+    return false;
+  }
   
   // Verificar que la cantidad de placas coincida con las placas actuales
   const currentPlates = getPlates();
-  const savedPlates = savedSolution.instances?.length || 0;
+  if (!Array.isArray(currentPlates) || !currentPlates.length) {
+    console.log('❌ DEBUG: No hay placas actuales configuradas para validar');
+    return false;
+  }
+
+  const savedPlates = normalized.instances.length;
+  const totalCurrentInstances = currentPlates.reduce((sum, plate) => sum + Math.max(1, plate?.sc || 1), 0);
+  const dimensionsMatch = (a, b) => {
+    const aW = Number(a?.sw ?? a?.width);
+    const aH = Number(a?.sh ?? a?.height);
+    const bW = Number(b?.sw ?? b?.width);
+    const bH = Number(b?.sh ?? b?.height);
+    return Math.abs(aW - bW) <= 0.1 && Math.abs(aH - bH) <= 0.1;
+  };
+
   console.log('🔍 DEBUG: Comparando con placas actuales:', {
     currentPlates: currentPlates.length,
+    totalCurrentInstances,
     savedPlates,
-    match: currentPlates.length === savedPlates,
+    match: totalCurrentInstances === savedPlates,
     currentPlatesDetails: currentPlates.map((p, i) => ({ i, sw: p.sw, sh: p.sh, sc: p.sc })),
-    savedInstancesDetails: savedSolution.instances?.map((inst, i) => ({ i, sw: inst.sw, sh: inst.sh }))
+    savedInstancesDetails: normalized.instances.map((inst, i) => ({ i, sw: inst.sw, sh: inst.sh }))
   });
-  
-  if (currentPlates.length !== savedPlates) {
-    console.log('❌ DEBUG: Cantidad de placas no coincide con placas actuales');
-    
-    // INTENTO DE ARREGLO: Verificar si es un problema de instancias vs placas únicas
-    console.log('🔧 DEBUG: Intentando arreglo alternativo...');
-    
-    // Calcular total de instancias en placas actuales
-    const totalCurrentInstances = currentPlates.reduce((sum, plate) => sum + (plate.sc || 1), 0);
-    console.log('🔧 DEBUG: Total instancias actuales vs guardadas:', {
-      totalCurrentInstances,
-      savedPlates,
-      match: totalCurrentInstances === savedPlates
+
+  if (totalCurrentInstances === savedPlates) {
+    const expandedCurrentInstances = [];
+    currentPlates.forEach((plate) => {
+      const count = Math.max(1, plate?.sc || 1);
+      for (let i = 0; i < count; i++) {
+        expandedCurrentInstances.push({ sw: Number(plate.sw), sh: Number(plate.sh) });
+      }
     });
-    
-    // Si el total de instancias coincide, intentar hacer la validación más flexible
-    if (totalCurrentInstances === savedPlates) {
-      console.log('✅ DEBUG: Coincidencia por total de instancias, continuando validación...');
-    } else {
+
+    for (let idx = 0; idx < savedPlates; idx++) {
+      const current = expandedCurrentInstances[idx];
+      const saved = normalized.instances[idx];
+      if (!current || !saved || !dimensionsMatch(current, saved)) {
+        console.log(`❌ DEBUG: Dimensiones de instancia ${idx} no coinciden`, { current, saved });
+        return false;
+      }
+    }
+  } else {
+    const allSavedInstancesCompatible = normalized.instances.every((saved) =>
+      currentPlates.some((current) => dimensionsMatch(current, saved))
+    );
+
+    if (!allSavedInstancesCompatible) {
+      console.log('❌ DEBUG: Instancias guardadas incompatibles con dimensiones de placas actuales');
       return false;
     }
-  }
-  
-  // Verificar que las dimensiones de placas coincidan con las actuales
-  // Si tenemos instancias individuales vs placas con cantidad, necesitamos validación especial
-  let instanceIndex = 0;
-  for (let plateIndex = 0; plateIndex < currentPlates.length; plateIndex++) {
-    const currentPlate = currentPlates[plateIndex];
-    const plateCount = currentPlate.sc || 1;
-    
-    console.log(`🔍 DEBUG: Validando placa ${plateIndex} con ${plateCount} instancias...`);
-    
-    // Verificar cada instancia de esta placa
-    for (let instInPlate = 0; instInPlate < plateCount; instInPlate++) {
-      if (instanceIndex >= savedSolution.instances.length) {
-        console.log(`❌ DEBUG: No hay suficientes instancias guardadas (faltan a partir de ${instanceIndex})`);
-        return false;
-      }
-      
-      const saved = savedSolution.instances[instanceIndex];
-      
-      console.log(`🔍 DEBUG: Instancia ${instanceIndex} (placa ${plateIndex}.${instInPlate}):`, {
-        current: { sw: currentPlate.sw, sh: currentPlate.sh },
-        saved: saved ? { sw: saved.sw, sh: saved.sh } : null
-      });
-      
-      if (!saved) {
-        console.log(`❌ DEBUG: Instancia ${instanceIndex} faltante`);
-        return false;
-      }
-      
-      const swDiff = Math.abs(currentPlate.sw - saved.sw);
-      const shDiff = Math.abs(currentPlate.sh - saved.sh);
-      
-      if (swDiff > 0.1 || shDiff > 0.1) {
-        console.log(`❌ DEBUG: Dimensiones de instancia ${instanceIndex} no coinciden:`, {
-          swDiff,
-          shDiff,
-          threshold: 0.1
-        });
-        return false;
-      }
-      
-      instanceIndex++;
+
+    const hasAnyPlacement = normalized.placementsByPlate.some((plate) => Array.isArray(plate) && plate.length > 0);
+    if (!hasAnyPlacement) {
+      console.log('❌ DEBUG: Hay mismatch de instancias y no hay placements para usar savedSolution');
+      return false;
     }
+
+    console.log('⚠️ DEBUG: Instancias no coinciden en cantidad; se acepta savedSolution por compatibilidad dimensional.');
   }
   
   console.log('✅ DEBUG: Solución guardada es válida con placas actuales');
@@ -9032,7 +9445,8 @@ function buildSolutionFromAdvancedResult(optimizationResult, plateSpec) {
     id: `plate-${idx}`,
     width: plateSpec.width,
     height: plateSpec.height,
-    material: materialName
+    material: materialName,
+    layoutStrategy: typeof plate?.layoutStrategy === 'string' ? plate.layoutStrategy : undefined
   }));
 
   const placementsByPlate = plates.map((plate) => {
@@ -9191,8 +9605,8 @@ function formatRigheLine(lineNumber, command, measure, quantity = 1) {
   if (!Number.isFinite(qty)) qty = 1;
   if (qty < 0) qty = 0;
   const commandColumn = `${command},`;
-  const measureColumn = padMeasure(measure);
-  return `${lineNumber}=${commandColumn}${measureColumn},${qty},0.000000,0.000000,0.000000,0.000000`;
+  const measureColumn = toFixedMeasure(measure);
+  return `${lineNumber}=${commandColumn}${measureColumn},${qty},0.000000,0.000000,0.000000,0.000000,1`;
 }
 
 function numbersAlmostEqual(a, b, tolerance = CNC_FLOAT_TOLERANCE) {
@@ -9271,6 +9685,65 @@ function normalizePlacementForCNC(placement, index = 0) {
     original: placement,
     valid
   };
+}
+
+function inferLayoutStrategyFromPlacements(placements, { tolerance = 0.5 } = {}) {
+  if (!Array.isArray(placements) || placements.length < 2) {
+    return null;
+  }
+
+  const tol = Number.isFinite(Number(tolerance)) && Number(tolerance) > 0 ? Number(tolerance) : 0.5;
+  const normalizeStep = (value) => Math.round(Number(value) / tol) * tol;
+  const normalizeEntry = (entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const x = Number(entry.x);
+    const y = Number(entry.y);
+    const width = Number(entry.width ?? entry.w);
+    const height = Number(entry.height ?? entry.h);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) return null;
+    if (width <= 0 || height <= 0) return null;
+    return { x, y, width, height };
+  };
+
+  const normalized = placements.map(normalizeEntry).filter(Boolean);
+  if (normalized.length < 2) {
+    return null;
+  }
+
+  const buildStats = (keyBuilder) => {
+    const groups = new Map();
+    normalized.forEach((entry) => {
+      const key = keyBuilder(entry);
+      groups.set(key, (groups.get(key) || 0) + 1);
+    });
+    let score = 0;
+    let maxGroupSize = 0;
+    groups.forEach((count) => {
+      if (count > 1) score += (count - 1);
+      if (count > maxGroupSize) maxGroupSize = count;
+    });
+    return { score, maxGroupSize, groupCount: groups.size };
+  };
+
+  // Estrategia "vertical" en este flujo = piezas organizadas en columnas.
+  const verticalStats = buildStats((entry) => `${normalizeStep(entry.x)}|${normalizeStep(entry.width)}`);
+  // Estrategia "horizontal" en este flujo = piezas organizadas en filas.
+  const horizontalStats = buildStats((entry) => `${normalizeStep(entry.y)}|${normalizeStep(entry.height)}`);
+
+  if (verticalStats.score === 0 && horizontalStats.score === 0) {
+    return null;
+  }
+
+  if (verticalStats.score > horizontalStats.score) return 'vertical';
+  if (horizontalStats.score > verticalStats.score) return 'horizontal';
+
+  if (verticalStats.maxGroupSize > horizontalStats.maxGroupSize) return 'vertical';
+  if (horizontalStats.maxGroupSize > verticalStats.maxGroupSize) return 'horizontal';
+
+  if (verticalStats.groupCount < horizontalStats.groupCount) return 'vertical';
+  if (horizontalStats.groupCount < verticalStats.groupCount) return 'horizontal';
+
+  return null;
 }
 
 function placementListsMatch(a, b, tolerance = 0.05) {
@@ -9800,6 +10273,8 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
     const mainBottomY = Number(mainLastPlacement?.y) + Number(mainLastPlacement?.height);
 
     const combinedUVPairs = [];
+    let combinedColumns = [];
+    let cortesUSplitIndex = cortesU.length;
     const candidateInfos = [];
 
     for (let j = i + 1; j < sortedFranjas.length; j++) {
@@ -9868,6 +10343,114 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
       }
       selectedCandidates.sort((a, b) => a.index - b.index);
 
+      const mainSegments = franja.placements.map((placement, placementIdx) => ({
+        idx: placementIdx,
+        topY: Number(placement.y),
+        bottomY: Number(placement.y) + Number(placement.height)
+      }));
+      const candidatesTopY = selectedCandidates.reduce((minY, candidate) => Math.min(minY, candidate.topY), Infinity);
+      const candidatesBottomY = selectedCandidates.reduce((maxY, candidate) => Math.max(maxY, candidate.bottomY), -Infinity);
+      const overlappingMainIndexes = mainSegments
+        .filter((segment) => rangesOverlap(segment.topY, segment.bottomY, candidatesTopY, candidatesBottomY, POSITION_TOLERANCE))
+        .map((segment) => segment.idx);
+      if (overlappingMainIndexes.length) {
+        cortesUSplitIndex = Math.min(cortesU.length, Math.max(...overlappingMainIndexes) + 1);
+      }
+
+      const buildColumnsFromCandidates = (candidates) => {
+        const columns = [];
+        const findColumn = (xValue) => columns.find((column) => numbersAlmostEqual(column.x_u, xValue, POSITION_TOLERANCE));
+
+        candidates.forEach((candidate) => {
+          let column = findColumn(candidate.leftX);
+          if (!column) {
+            column = { x_u: candidate.leftX, rows: [] };
+            columns.push(column);
+          }
+
+          const placementsInCandidate = Array.isArray(candidate?.franja?.placements)
+            ? candidate.franja.placements.slice()
+            : [];
+
+          placementsInCandidate
+            .sort((a, b) => {
+              const ay = Number(a?.y);
+              const by = Number(b?.y);
+              if (ay !== by) return ay - by;
+              return Number(a?.x) - Number(b?.x);
+            })
+            .forEach((placement, placementOrder) => {
+              const rowHeight = Number(placement?.height);
+              const rowTop = Number(placement?.y);
+              const cutWidth = Number(placement?.width);
+              const cutX = Number(placement?.x);
+
+              if (!Number.isFinite(rowHeight) || rowHeight <= 0 ||
+                  !Number.isFinite(rowTop) ||
+                  !Number.isFinite(cutWidth) || cutWidth <= 0) {
+                return;
+              }
+
+              let matchedRow = column.rows.find((row) =>
+                numbersAlmostEqual(row.ancho_u, rowHeight, WIDTH_TOLERANCE) &&
+                numbersAlmostEqual(row.top_y, rowTop, POSITION_TOLERANCE)
+              );
+
+              if (!matchedRow) {
+                matchedRow = {
+                  ancho_u: rowHeight,
+                  top_y: rowTop,
+                  cuts: []
+                };
+                column.rows.push(matchedRow);
+              }
+
+              matchedRow.cuts.push({
+                value: cutWidth,
+                x: Number.isFinite(cutX) ? cutX : candidate.leftX,
+                order: placementOrder
+              });
+            });
+        });
+
+        return columns
+          .map((column) => {
+            const normalizedRows = column.rows
+              .map((row) => {
+                const orderedCuts = Array.isArray(row.cuts)
+                  ? row.cuts
+                      .slice()
+                      .sort((a, b) => {
+                        if (a.x !== b.x) return a.x - b.x;
+                        return a.order - b.order;
+                      })
+                      .map((cut) => Number(cut.value))
+                      .filter((value) => Number.isFinite(value) && value > 0)
+                  : [];
+
+                return {
+                  ancho_u: Number(row.ancho_u),
+                  top_y: Number(row.top_y),
+                  cortes_v: orderedCuts
+                };
+              })
+              .filter((row) => Number.isFinite(row.ancho_u) && row.ancho_u > 0 && row.cortes_v.length > 0)
+              .sort((a, b) => {
+                if (a.top_y !== b.top_y) return a.top_y - b.top_y;
+                return a.ancho_u - b.ancho_u;
+              });
+
+            return {
+              x_u: Number(column.x_u),
+              rows: normalizedRows
+            };
+          })
+          .filter((column) => column.rows.length > 0)
+          .sort((a, b) => a.x_u - b.x_u);
+      };
+
+      combinedColumns = buildColumnsFromCandidates(selectedCandidates);
+
       for (const selected of selectedCandidates) {
         mergeUVGroups(combinedUVPairs, selected.uvGroups);
         selected.franja.isSobrante = true;
@@ -9884,7 +10467,9 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
       cantidad: 1,
       refiloU: phaseRefiloU,
       cortesU,
-      sobrante: sobranteData
+      sobrante: sobranteData,
+      sobranteColumns: combinedColumns.length ? combinedColumns : undefined,
+      cortesUSplitIndex
     });
 
     console.log(`[DEBUG_RIGHE] Fase ${i} Finalizada. SobranteData Generado:`, sobranteData);
@@ -10056,7 +10641,8 @@ function generateCNCForPlate(instance, placements, plateNumber, kerf, uiTrim) {
   const plateIdx = Math.max(0, Number(plateNumber) - 1);
   const displayedStrategy = normalizeStrategy(currentDisplayedPlateSpecs?.[plateIdx]?.layoutStrategy);
   const instanceStrategy = normalizeStrategy(instance?.layoutStrategy);
-  let preferredStrategy = instanceStrategy || displayedStrategy || null;
+  const inferredStrategyFromPlacements = normalizeStrategy(inferLayoutStrategyFromPlacements(planPlacements));
+  let preferredStrategy = instanceStrategy || displayedStrategy || inferredStrategyFromPlacements || null;
 
   const refiloPreferido = getRefiladoInputValue();
   const plateModel = Array.isArray(lastOptimizationResult?.plates)
