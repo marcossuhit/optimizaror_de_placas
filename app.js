@@ -10334,6 +10334,22 @@ function buildHorizontalCutPlanFromPlate(plate, { refiloPreferido = 0, uiTrim = 
             }
           }
 
+          if (!attachesToSelection) {
+            const selectionTop = selectedCandidates.reduce((minY, selected) => Math.min(minY, selected.topY), Infinity);
+            const selectionBottom = selectedCandidates.reduce((maxY, selected) => Math.max(maxY, selected.bottomY), -Infinity);
+            const mainLeftX = Number(franja.x);
+            const mainRightX = Number(franja.x) + Number(franja.largo);
+            const isInsideMainSpanX = candidate.leftX >= (mainLeftX - POSITION_TOLERANCE) &&
+              candidate.rightX <= (mainRightX + POSITION_TOLERANCE);
+            const overlapsOrContinuesSelectionY =
+              rangesOverlap(selectionTop, selectionBottom, candidate.topY, candidate.bottomY, POSITION_TOLERANCE) ||
+              startsAfterWithKerf(selectionBottom, candidate.topY);
+
+            if (isInsideMainSpanX && overlapsOrContinuesSelectionY) {
+              attachesToSelection = true;
+            }
+          }
+
           if (!attachesToSelection) continue;
 
           selectedIndexes.add(candidate.index);
