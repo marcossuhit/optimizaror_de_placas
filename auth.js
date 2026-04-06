@@ -149,19 +149,31 @@
   applyLoginRedirect();
   const manualLoginForm = document.getElementById('manualLoginForm');
   if (manualLoginForm) {
+    const userInput = document.getElementById('loginUserInput');
+    const domainSelect = document.getElementById('loginDomainSelect');
+    const sanitizeManualUsername = (value) => {
+      const source = typeof value === 'string' ? value.trim() : '';
+      const allowedPrefix = source.match(/^[a-zA-Z0-9._-]*/);
+      return allowedPrefix ? allowedPrefix[0] : '';
+    };
+    const applySanitizedUsername = () => {
+      if (!userInput) return '';
+      const sanitized = sanitizeManualUsername(userInput.value);
+      if (userInput.value !== sanitized) {
+        userInput.value = sanitized;
+      }
+      return sanitized;
+    };
+    userInput?.addEventListener('input', applySanitizedUsername);
+    userInput?.addEventListener('change', applySanitizedUsername);
+    userInput?.addEventListener('blur', applySanitizedUsername);
+
     manualLoginForm.addEventListener('submit', (event) => {
       event.preventDefault();
-      const userInput = document.getElementById('loginUserInput');
-      const domainSelect = document.getElementById('loginDomainSelect');
-      const rawUser = (userInput?.value || '').trim();
+      const rawUser = applySanitizedUsername();
       const domain = (domainSelect?.value || '').trim();
       if (!rawUser) {
         alert('Ingresá tu nombre de usuario.');
-        userInput?.focus();
-        return;
-      }
-      if (!/^[a-zA-Z0-9._-]+$/.test(rawUser)) {
-        alert('El usuario solo puede contener letras, números, puntos, guiones y guiones bajos.');
         userInput?.focus();
         return;
       }
