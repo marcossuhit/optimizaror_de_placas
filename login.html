@@ -34,7 +34,12 @@
         font-size: 1rem;
         color: #f8fafc;
       }
-      .input-field input { flex: 1 1 auto; min-width: 0; }
+      .input-field input {
+        flex: 1 1 auto;
+        min-width: 0;
+        caret-color: #f8fafc;
+        -webkit-text-fill-color: #f8fafc;
+      }
       .input-field select {
         width: 134px;
         flex: 0 0 auto;
@@ -75,6 +80,31 @@
         font-size: .78rem;
         line-height: 1.5;
         text-align: center;
+      }
+      @media (max-width: 560px) {
+        .login-card {
+          padding: 136px 16px 24px;
+        }
+        .login-card__panel {
+          padding: 72px 14px 22px;
+        }
+        .input-field {
+          flex-wrap: wrap;
+          overflow: visible;
+        }
+        .input-icon,
+        .input-field span.separator {
+          min-height: 46px;
+        }
+        .input-field input {
+          flex: 1 1 0;
+          min-width: 120px;
+          padding: 12px 10px;
+        }
+        .input-field select {
+          width: 100%;
+          border-top: 1px solid rgba(107, 114, 128, 0.45);
+        }
       }
     </style>
   </head>
