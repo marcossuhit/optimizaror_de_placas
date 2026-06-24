@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Inscripcion Evento - Gimnasia</title>
+    <style>
+      :root {
+        --gelp-blue: #0047ab;
+        --gelp-dark: #0d1b3d;
+        --gelp-light: #f5f8ff;
+        --gelp-white: #ffffff;
+        --gelp-border: #c8d8ff;
+        --error: #c62828;
+        --success: #0f7a32;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background:
+          linear-gradient(135deg, rgba(0, 71, 171, 0.14), transparent 45%),
+          repeating-linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.92) 0 40px,
+            rgba(0, 71, 171, 0.07) 40px 78px
+          ),
+          var(--gelp-light);
+        color: #1d2433;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 28px 12px;
+      }
+
+      .card {
+        width: 100%;
+        max-width: 920px;
+        background: var(--gelp-white);
+        border: 1px solid var(--gelp-border);
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 18px 40px rgba(13, 27, 61, 0.18);
+      }
+
+      .header {
+        padding: 24px;
+        background:
+          radial-gradient(circle at right top, rgba(255, 255, 255, 0.3), transparent 35%),
+          linear-gradient(120deg, var(--gelp-dark), var(--gelp-blue));
+        color: var(--gelp-white);
+      }
+
+      .header h1 {
+        margin: 0;
+        font-size: 1.6rem;
+        line-height: 1.2;
+      }
+
+      .header p {
+        margin: 6px 0 0;
+        opacity: 0.95;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 18px;
+        padding: 18px 22px 2px;
+        background:
+          radial-gradient(circle at 15% 15%, rgba(0, 71, 171, 0.1), transparent 45%),
+          linear-gradient(180deg, rgba(0, 71, 171, 0.04), rgba(255, 255, 255, 0));
+      }
+
+      .hero-copy h2 {
+        margin: 0;
+        color: var(--gelp-dark);
+        font-size: 1.3rem;
+      }
+
+      .hero-copy p {
+        margin: 8px 0 0;
+        line-height: 1.45;
+        color: #2f3b56;
+      }
+
+      .hero-media {
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid var(--gelp-border);
+        box-shadow: 0 10px 26px rgba(13, 27, 61, 0.18);
+        background: #eef3ff;
+      }
+
+      .hero-media img {
+        width: 100%;
+        height: 230px;
+        object-fit: cover;
+        display: block;
+      }
+
+      form {
+        padding: 22px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field.full {
+        grid-column: 1 / -1;
+      }
+
+      .race-config {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      label {
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--gelp-border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 0.95rem;
+        outline: none;
+        transition: 0.2s border-color, 0.2s box-shadow;
+        background: #fff;
+      }
+
+      input:focus,
+      select:focus {
+        border-color: var(--gelp-blue);
+        box-shadow: 0 0 0 4px rgba(0, 71, 171, 0.16);
+      }
+
+      .error {
+        color: var(--error);
+        font-size: 0.82rem;
+        min-height: 1em;
+      }
+
+      .actions {
+        margin-top: 16px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      button {
+        border: none;
+        border-radius: 999px;
+        background: linear-gradient(120deg, var(--gelp-dark), var(--gelp-blue));
+        color: #fff;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        padding: 11px 20px;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
+
+      .status {
+        font-size: 0.92rem;
+        min-height: 1.4em;
+      }
+
+      .status.error {
+        color: var(--error);
+      }
+
+      .status.success {
+        color: var(--success);
+      }
+
+      .preview {
+        margin-top: 10px;
+        display: none;
+        border: 1px dashed var(--gelp-border);
+        border-radius: 10px;
+        padding: 8px;
+        background: #f9fbff;
+      }
+
+      .preview img {
+        width: 100%;
+        max-height: 220px;
+        object-fit: contain;
+        border-radius: 8px;
+        display: block;
+      }
+
+      .preview-meta {
+        margin-top: 6px;
+        font-size: 0.82rem;
+        color: #2f3b56;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      .success-panel {
+        display: none;
+        margin: 18px 22px 24px;
+        border-radius: 16px;
+        padding: 20px 18px;
+        border: 2px solid #66b486;
+        background:
+          radial-gradient(circle at top right, rgba(255, 255, 255, 0.95), transparent 42%),
+          linear-gradient(130deg, #e8fff1, #d8f6e4);
+        box-shadow: 0 14px 30px rgba(15, 122, 50, 0.18);
+      }
+
+      .success-panel.show {
+        display: block;
+      }
+
+      .success-panel h3 {
+        margin: 0 0 8px;
+        font-size: 1.35rem;
+        color: #0f6d30;
+      }
+
+      .success-panel p {
+        margin: 0;
+        line-height: 1.45;
+        color: #154f2a;
+        font-weight: 600;
+      }
+
+      .distance-info {
+        display: none;
+        border: 2px solid #7fa6ee;
+        border-radius: 14px;
+        background:
+          radial-gradient(circle at top right, rgba(255, 255, 255, 0.85), transparent 38%),
+          linear-gradient(140deg, #f8fbff, #dbe9ff);
+        padding: 14px;
+        box-shadow:
+          0 10px 24px rgba(13, 27, 61, 0.15),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+      }
+
+      .distance-info.show {
+        display: block;
+      }
+
+      .distance-info-title {
+        margin: 10px 0 10px;
+        font-size: 1.08rem;
+        font-weight: 800;
+        color: #0d1b3d;
+      }
+
+      .distance-info-price {
+        margin: 0;
+        padding: 10px;
+        border-radius: 10px;
+        background: linear-gradient(130deg, #0d1b3d, #003f99);
+        color: #fff;
+      }
+
+      .distance-info-badge {
+        display: inline-block;
+        font-size: 0.72rem;
+        line-height: 1;
+        padding: 6px 10px;
+        border-radius: 999px;
+        letter-spacing: 0.8px;
+        font-weight: 800;
+        color: #0d1b3d;
+        border: 1px solid #8fb2f2;
+        background: linear-gradient(135deg, #ffffff, #e8f1ff);
+      }
+
+      .distance-info-badge.is-promo {
+        color: #0e5d2a;
+        border-color: #83d9a1;
+        background: linear-gradient(135deg, #f4fff7, #dff9e8);
+      }
+
+      .distance-info-badge.is-standard {
+        color: #0d1b3d;
+        border-color: #8fb2f2;
+        background: linear-gradient(135deg, #ffffff, #e8f1ff);
+      }
+
+      .distance-info-badge.is-closed {
+        color: #7c1f1f;
+        border-color: #ef9a9a;
+        background: linear-gradient(135deg, #fff7f7, #ffe3e3);
+      }
+
+      .distance-info-price-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 10px;
+      }
+
+      .distance-info-price-row + .distance-info-price-row {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.2);
+      }
+
+      .distance-info-price-label {
+        font-size: 0.87rem;
+        opacity: 0.95;
+      }
+
+      .distance-info-price-main {
+        font-size: 1.25rem;
+        font-weight: 800;
+        letter-spacing: 0.3px;
+        white-space: nowrap;
+      }
+
+      .distance-info-price-main.is-strikethrough {
+        font-size: 1.05rem;
+        font-weight: 700;
+        opacity: 0.75;
+        text-decoration: line-through;
+        text-decoration-thickness: 2px;
+      }
+
+      .distance-info-price-main.is-secondary {
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+
+      .distance-info-transfer {
+        margin: 0;
+        font-size: 0.9rem;
+        line-height: 1.35;
+        color: #1f2f52;
+      }
+
+      .distance-info-note {
+        margin: 10px 0 0;
+        font-size: 0.84rem;
+        color: #1a2f57;
+        font-weight: 600;
+      }
+
+      .distance-info-transfer-card {
+        margin-top: 10px;
+        padding: 10px;
+        border-radius: 10px;
+        border: 1px solid #c1d5fb;
+        background: rgba(255, 255, 255, 0.9);
+      }
+
+      .distance-info-transfer-title {
+        margin: 0 0 8px;
+        font-size: 0.82rem;
+        color: #0d1b3d;
+        font-weight: 800;
+        letter-spacing: 0.4px;
+      }
+
+      .distance-info-transfer-grid {
+        display: grid;
+        gap: 6px;
+      }
+
+      .distance-info-transfer-item {
+        display: grid;
+        grid-template-columns: 72px 1fr;
+        gap: 8px;
+      }
+
+      .distance-info-transfer-label {
+        font-size: 0.78rem;
+        color: #35537f;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.2px;
+      }
+
+      .distance-info-transfer-value {
+        font-size: 0.9rem;
+        color: #0d1b3d;
+        font-weight: 700;
+      }
+
+      @media (max-width: 700px) {
+        .hero {
+          grid-template-columns: 1fr;
+          padding-bottom: 8px;
+        }
+
+        .hero-media img {
+          height: 280px;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .race-config {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <section class="card">
+      <header class="header">
+        <h1>Inscripcion Evento Deportivo</h1>
+        <p>Club de Gimnasia y Esgrima La Plata</p>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <h2>El Lobo te espera</h2>
+          <p>
+            Sumate al evento y representa al club con orgullo. Completá el formulario para reservar
+            tu lugar en la jornada deportiva.
+          </p>
+        </div>
+        <div class="hero-media">
+          <img
+            id="eventImage"
+            src="data:image/svg+xml;charset=UTF-8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20width%3D%271200%27%20height%3D%27700%27%20viewBox%3D%270%200%201200%20700%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20x2%3D%271%27%3E%3Cstop%20offset%3D%270%25%27%20stop-color%3D%27%230d1b3d%27/%3E%3Cstop%20offset%3D%27100%25%27%20stop-color%3D%27%230047ab%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width%3D%271200%27%20height%3D%27700%27%20fill%3D%27url(%23g)%27/%3E%3Ctext%20x%3D%27600%27%20y%3D%27380%27%20text-anchor%3D%27middle%27%20fill%3D%27white%27%20font-family%3D%27Arial%2C%20sans-serif%27%20font-size%3D%2756%27%20font-weight%3D%27700%27%3EGimnasia%20LP%3C/text%3E%3C/svg%3E"
+            data-drive-src="<?!= eventImageSrc ?>"
+            alt="Club Gimnasia y Esgrima La Plata"
+            loading="lazy"
+          />
+        </div>
+      </section>
+
+      <form id="registrationForm" novalidate>
+        <div class="grid">
+          <div class="field full">
+            <label for="fullName">Nombre y Apellido *</label>
+            <input id="fullName" name="fullName" type="text" autocomplete="name" required />
+            <small class="error" id="fullNameError"></small>
+          </div>
+
+          <div class="field">
+            <label for="document">Doc *</label>
+            <input id="document" name="document" type="text" inputmode="numeric" required />
+            <small class="error" id="documentError"></small>
+          </div>
+
+          <div class="field">
+            <label for="birthDate">Fecha Nacimiento *</label>
+            <input id="birthDate" name="birthDate" type="date" required />
+            <small class="error" id="birthDateError"></small>
+          </div>
+
+          <div class="field">
+            <label for="email">Email *</label>
+            <input id="email" name="email" type="email" autocomplete="email" required />
+            <small class="error" id="emailError"></small>
+          </div>
+
+          <div class="field">
+            <label for="phone">Telefono *</label>
+            <input id="phone" name="phone" type="tel" autocomplete="tel" required />
+            <small class="error" id="phoneError"></small>
+          </div>
+
+          <div class="field full race-config">
+            <div class="field">
+              <label for="sex">Sexo *</label>
+              <select id="sex" name="sex" required>
+                <option value="">Seleccionar</option>
+                <option value="Masculino">Masculino</option>
+                <option value="Femenino">Femenino</option>
+                <option value="No binario">No binario</option>
+              </select>
+              <small class="error" id="sexError"></small>
+            </div>
+
+            <div class="field">
+              <label for="distance">Elegi tu Distancia *</label>
+              <select id="distance" name="distance" required>
+                <option value="">Seleccionar</option>
+                <option value="4 KM (Caminantes)">4 KM (Caminantes)</option>
+                <option value="11 KM">11 KM</option>
+              </select>
+              <small class="error" id="distanceError"></small>
+            </div>
+
+            <div class="field">
+              <label for="category">Categoria *</label>
+              <select id="category" name="category" required disabled>
+                <option value="">Primero elegi distancia</option>
+              </select>
+              <small class="error" id="categoryError"></small>
+            </div>
+          </div>
+
+          <div class="field full">
+            <div id="distanceInfo" class="distance-info" aria-live="polite">
+              <span id="distanceInfoBadge" class="distance-info-badge">INFORMACION DE INSCRIPCION</span>
+              <p id="distanceInfoTitle" class="distance-info-title"></p>
+              <div id="distanceInfoPrice" class="distance-info-price"></div>
+              <p id="distanceInfoNote" class="distance-info-note"></p>
+              <div class="distance-info-transfer-card">
+                <p class="distance-info-transfer-title">DATOS PARA TRANSFERIR</p>
+                <div id="distanceInfoTransfer" class="distance-info-transfer distance-info-transfer-grid"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="trainingGroup">Grupo Entrenamiento *</label>
+            <input
+              id="trainingGroup"
+              name="trainingGroup"
+              type="text"
+              placeholder="Ingresa tu grupo"
+              required
+            />
+            <small class="error" id="trainingGroupError"></small>
+          </div>
+
+          <div class="field">
+            <label for="shirtSize">Talle de Remera *</label>
+            <select id="shirtSize" name="shirtSize" required>
+              <option value="">Seleccionar</option>
+            </select>
+            <small class="error" id="shirtSizeError"></small>
+          </div>
+
+          <div class="field full">
+            <label for="discountCode">Codigo de descuento (opcional)</label>
+            <input id="discountCode" name="discountCode" type="text" />
+            <small class="error" id="discountCodeError"></small>
+          </div>
+
+          <div class="field full">
+            <label for="attachment">Adjuntar imagen *</label>
+            <input id="attachment" name="attachment" type="file" accept="image/*" required />
+            <small class="error" id="attachmentError"></small>
+            <div class="preview" id="attachmentPreviewWrap">
+              <img id="attachmentPreviewImg" alt="Vista previa del adjunto" />
+              <div class="preview-meta" id="attachmentPreviewMeta"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="submitBtn" type="submit">Enviar Inscripcion</button>
+          <span id="status" class="status"></span>
+        </div>
+      </form>
+
+      <section id="successPanel" class="success-panel" aria-live="polite">
+        <h3>Inscripcion enviada con exito</h3>
+        <p>
+          Tu pre-inscripcion fue registrada correctamente. En breve recibiras la confirmacion de
+          la organizacion del evento.
+        </p>
+      </section>
+    </section>
+
+    <script>
+      const form = document.getElementById('registrationForm');
+      const successPanelEl = document.getElementById('successPanel');
+      const submitBtn = document.getElementById('submitBtn');
+      const statusEl = document.getElementById('status');
+      const discountCodeEl = document.getElementById('discountCode');
+      const eventImageEl = document.getElementById('eventImage');
+      const distanceEl = document.getElementById('distance');
+      const sexEl = document.getElementById('sex');
+      const categoryEl = document.getElementById('category');
+      const shirtSizeEl = document.getElementById('shirtSize');
+      const distanceInfoEl = document.getElementById('distanceInfo');
+      const distanceInfoBadgeEl = document.getElementById('distanceInfoBadge');
+      const distanceInfoTitleEl = document.getElementById('distanceInfoTitle');
+      const distanceInfoPriceEl = document.getElementById('distanceInfoPrice');
+      const distanceInfoNoteEl = document.getElementById('distanceInfoNote');
+      const distanceInfoTransferEl = document.getElementById('distanceInfoTransfer');
+      const walkersDistanceValue = '4 KM (Caminantes)';
+      const runDistanceValue = '11 KM';
+      const attachmentEl = document.getElementById('attachment');
+      const attachmentPreviewWrapEl = document.getElementById('attachmentPreviewWrap');
+      const attachmentPreviewImgEl = document.getElementById('attachmentPreviewImg');
+      const attachmentPreviewMetaEl = document.getElementById('attachmentPreviewMeta');
+      const shirtSizeOptions = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+      const sexOptions = ['Masculino', 'Femenino', 'No binario'];
+      const validDiscountCodes = ['LOBO10', 'LOBO20', 'LOBO30', 'LOBO40', 'LOBO50', 'LOBOFULL'];
+      const discountCodePercents = {
+        LOBO10: 10,
+        LOBO20: 20,
+        LOBO30: 30,
+        LOBO40: 40,
+        LOBO50: 50,
+        LOBOFULL: 100
+      };
+      const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+      const categoryOptions11 = [
+        'A - Hasta 19 Años',
+        'B - 20 a 29 Años',
+        'C - 30 a 34 Años',
+        'D - 35 a 39 Años',
+        'E - 40 a 44 Años',
+        'F - 45 a 49 Años',
+        'G - 50 a 54 Años',
+        'H - 55 a 59 Años',
+        'I - 60 a 64 Años',
+        'J - 65 a 69 Años',
+        'K - Mas de 70 Años'
+      ];
+      const touchedFields = {};
+      submitBtn.disabled = true;
+
+      // Si el template se evaluo correctamente, reemplaza el fallback por la imagen de Drive.
+      if (eventImageEl) {
+        const dynamicSrc = eventImageEl.dataset.driveSrc || '';
+        if (dynamicSrc && dynamicSrc.indexOf('eventImageSrc') === -1) {
+          eventImageEl.src = dynamicSrc;
+        }
+      }
+
+      function fillSimpleSelectOptions(selectEl, options) {
+        const first = '<option value="">Seleccionar</option>';
+        const rest = options.map((opt) => '<option value="' + opt + '">' + opt + '</option>');
+        selectEl.innerHTML = [first].concat(rest).join('');
+      }
+
+      function hideDistanceInfo() {
+        distanceInfoEl.classList.remove('show');
+        distanceInfoBadgeEl.textContent = 'INFORMACION DE INSCRIPCION';
+        distanceInfoBadgeEl.classList.remove('is-promo');
+        distanceInfoBadgeEl.classList.remove('is-standard');
+        distanceInfoBadgeEl.classList.remove('is-closed');
+        distanceInfoTitleEl.textContent = '';
+        distanceInfoPriceEl.innerHTML = '';
+        distanceInfoNoteEl.textContent = '';
+        distanceInfoTransferEl.innerHTML = '';
+      }
+
+      function buildTransferGridHtml() {
+        return [
+          '<div class="distance-info-transfer-item"><span class="distance-info-transfer-label">Alias</span><span class="distance-info-transfer-value">Desafiodellobo</span></div>',
+          '<div class="distance-info-transfer-item"><span class="distance-info-transfer-label">CVU</span><span class="distance-info-transfer-value">0000003100053920065095</span></div>',
+          '<div class="distance-info-transfer-item"><span class="distance-info-transfer-label">Nombre</span><span class="distance-info-transfer-value">Ignacio Ezequiel Vaninetti</span></div>',
+          '<div class="distance-info-transfer-item"><span class="distance-info-transfer-label">Cuit</span><span class="distance-info-transfer-value">20-32181270-9</span></div>'
+        ].join('');
+      }
+
+      function formatArs(amount) {
+        return '$' + String(amount).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+      }
+
+      function getDiscountPercentByCode(rawCode) {
+        const code = String(rawCode || '').trim().toUpperCase();
+        if (!code) return 0;
+        return discountCodePercents[code] || 0;
+      }
+
+      function applyDiscountAmount(baseAmount, discountPercent) {
+        const base = Number(baseAmount) || 0;
+        const discount = Number(discountPercent) || 0;
+        if (discount <= 0) return base;
+        if (discount >= 100) return 0;
+        return Math.round((base * (100 - discount)) / 100);
+      }
+
+      function get11KmPriceByDate(dateObj) {
+        const now = new Date(dateObj || new Date());
+        const current = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const year = current.getFullYear();
+        const august2 = new Date(year, 7, 2);
+        const september2 = new Date(year, 8, 2);
+
+        if (current >= september2) {
+          return {
+            isOpen: false,
+            amount: 0,
+            badge: 'INSCRIPCION ONLINE FINALIZADA',
+            badgeClass: 'is-closed',
+            note: 'La pre-inscripcion online cerro el 1 de septiembre.'
+          };
+        }
+
+        if (current < august2) {
+          return {
+            isOpen: true,
+            amount: 50000,
+            badge: 'PRECIO PROMOCIONAL',
+            badgeClass: 'is-promo',
+            note: 'Tarifa promocional vigente hasta el 1 de agosto inclusive.'
+          };
+        }
+
+        return {
+          isOpen: true,
+          amount: 60000,
+          badge: 'TARIFA VIGENTE',
+          badgeClass: 'is-standard',
+          note: 'Tarifa vigente del 2 de agosto al 1 de septiembre inclusive.'
+        };
+      }
+
+      function isRegistrationOpenByDate(dateObj) {
+        const now = new Date(dateObj || new Date());
+        const current = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const year = current.getFullYear();
+        const september2 = new Date(year, 8, 2);
+        return current < september2;
+      }
+
+      function showDistanceInfo(distance) {
+        if (!distance) {
+          hideDistanceInfo();
+          return;
+        }
+
+        distanceInfoTransferEl.innerHTML = buildTransferGridHtml();
+
+        if (distance === runDistanceValue) {
+          const priceInfo = get11KmPriceByDate(new Date());
+          distanceInfoBadgeEl.textContent = priceInfo.badge;
+          distanceInfoBadgeEl.classList.remove('is-promo');
+          distanceInfoBadgeEl.classList.remove('is-standard');
+          distanceInfoBadgeEl.classList.remove('is-closed');
+          distanceInfoBadgeEl.classList.add(priceInfo.badgeClass);
+          if (!priceInfo.isOpen) {
+            distanceInfoTitleEl.textContent = 'La pre-inscripcion online cerro el 1 de septiembre.';
+            distanceInfoPriceEl.innerHTML = '';
+            distanceInfoNoteEl.textContent = priceInfo.note;
+            distanceInfoEl.classList.add('show');
+            return;
+          }
+          const code = String(discountCodeEl.value || '').trim().toUpperCase();
+          const discountPercent = getDiscountPercentByCode(code);
+          const finalAmount = applyDiscountAmount(priceInfo.amount, discountPercent);
+          let priceHtml = '';
+          if (discountPercent > 0) {
+            priceHtml +=
+              '<div class="distance-info-price-row"><span class="distance-info-price-label">Valor final vigente</span><span class="distance-info-price-main is-strikethrough">' +
+              formatArs(priceInfo.amount) +
+              '</span></div>' +
+              '<div class="distance-info-price-row"><span class="distance-info-price-label">Con codigo ' +
+              code +
+              ' (' +
+              discountPercent +
+              '%)</span><span class="distance-info-price-main">' +
+              formatArs(finalAmount) +
+              '</span></div>';
+          } else {
+            priceHtml =
+              '<div class="distance-info-price-row"><span class="distance-info-price-label">Valor final vigente</span><span class="distance-info-price-main">' +
+              formatArs(priceInfo.amount) +
+              '</span></div>';
+          }
+          distanceInfoTitleEl.textContent = 'Inscripcion 11 KM';
+          distanceInfoPriceEl.innerHTML = priceHtml;
+          distanceInfoNoteEl.textContent =
+            discountPercent > 0
+              ? 'Se esta utilizando el codigo ' + code + '. ' + priceInfo.note
+              : priceInfo.note;
+          distanceInfoEl.classList.add('show');
+          return;
+        }
+
+        if (distance === walkersDistanceValue) {
+          const isOpen = isRegistrationOpenByDate(new Date());
+          if (!isOpen) {
+            distanceInfoBadgeEl.textContent = 'INSCRIPCION ONLINE FINALIZADA';
+            distanceInfoBadgeEl.classList.add('is-closed');
+            distanceInfoBadgeEl.classList.remove('is-standard');
+            distanceInfoBadgeEl.classList.remove('is-promo');
+            distanceInfoTitleEl.textContent = 'La pre-inscripcion online cerro el 1 de septiembre.';
+            distanceInfoPriceEl.innerHTML = '';
+            distanceInfoNoteEl.textContent = 'La inscripcion online no se encuentra disponible.';
+            distanceInfoEl.classList.add('show');
+            return;
+          }
+          distanceInfoBadgeEl.textContent = 'TARIFA VIGENTE';
+          distanceInfoBadgeEl.classList.add('is-standard');
+          distanceInfoBadgeEl.classList.remove('is-promo');
+          distanceInfoBadgeEl.classList.remove('is-closed');
+          const code = String(discountCodeEl.value || '').trim().toUpperCase();
+          const discountPercent = getDiscountPercentByCode(code);
+          const baseAmount = 40000;
+          const finalAmount = applyDiscountAmount(baseAmount, discountPercent);
+          let priceHtml = '';
+          if (discountPercent > 0) {
+            priceHtml +=
+              '<div class="distance-info-price-row"><span class="distance-info-price-label">Valor final</span><span class="distance-info-price-main is-strikethrough">' +
+              formatArs(baseAmount) +
+              '</span></div>' +
+              '<div class="distance-info-price-row"><span class="distance-info-price-label">Con codigo ' +
+              code +
+              ' (' +
+              discountPercent +
+              '%)</span><span class="distance-info-price-main">' +
+              formatArs(finalAmount) +
+              '</span></div>';
+          } else {
+            priceHtml =
+              '<div class="distance-info-price-row"><span class="distance-info-price-label">Valor final</span><span class="distance-info-price-main">' +
+              formatArs(baseAmount) +
+              '</span></div>';
+          }
+          distanceInfoTitleEl.textContent = 'Inscripcion 4 KM (Caminantes)';
+          distanceInfoPriceEl.innerHTML = priceHtml;
+          distanceInfoNoteEl.textContent =
+            discountPercent > 0
+              ? 'Se esta utilizando el codigo ' + code + '. Categoria unica. Modalidad caminantes.'
+              : 'Categoria unica. Modalidad caminantes.';
+          distanceInfoEl.classList.add('show');
+          return;
+        }
+
+        hideDistanceInfo();
+      }
+
+      function syncShirtSizeByDistance() {
+        const distance = distanceEl.value;
+        const previous = shirtSizeEl.value;
+
+        if (distance === walkersDistanceValue) {
+          shirtSizeEl.disabled = true;
+          shirtSizeEl.innerHTML = '<option value="Sin Remera">Sin Remera</option>';
+          shirtSizeEl.value = 'Sin Remera';
+          return;
+        }
+
+        shirtSizeEl.disabled = false;
+        fillSimpleSelectOptions(shirtSizeEl, shirtSizeOptions);
+        if (shirtSizeOptions.indexOf(previous) !== -1) {
+          shirtSizeEl.value = previous;
+        }
+      }
+
+      syncShirtSizeByDistance();
+
+      function resetAttachmentPreview() {
+        attachmentPreviewWrapEl.style.display = 'none';
+        attachmentPreviewImgEl.removeAttribute('src');
+        attachmentPreviewMetaEl.textContent = '';
+      }
+
+      function formatFileSize(bytes) {
+        return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+      }
+
+      function validateAttachmentFile(file) {
+        if (!file) {
+          return 'Debes adjuntar una imagen.';
+        }
+        if (!file.type || file.type.indexOf('image/') !== 0) {
+          return 'Solo se permiten imagenes.';
+        }
+        if (file.size > MAX_ATTACHMENT_BYTES) {
+          return 'La imagen supera 4 MB.';
+        }
+        return true;
+      }
+
+      function toBase64(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = String(reader.result || '');
+            const comma = result.indexOf(',');
+            if (comma === -1) {
+              reject(new Error('No se pudo procesar la imagen.'));
+              return;
+            }
+            resolve(result.slice(comma + 1));
+          };
+          reader.onerror = () => reject(new Error('No se pudo leer la imagen.'));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      async function buildAttachmentPayload() {
+        const file = attachmentEl.files && attachmentEl.files[0];
+        if (!file) {
+          throw new Error('Debes adjuntar una imagen.');
+        }
+
+        const valid = validateAttachmentFile(file);
+        if (valid !== true) {
+          throw new Error(valid);
+        }
+
+        const base64 = await toBase64(file);
+        return {
+          attachmentName: file.name || 'imagen.jpg',
+          attachmentMime: file.type || 'image/jpeg',
+          attachmentBase64: base64
+        };
+      }
+
+      attachmentEl.addEventListener('change', () => {
+        touchedFields.attachment = true;
+        setError('attachment', '');
+        const file = attachmentEl.files && attachmentEl.files[0];
+        if (!file) {
+          resetAttachmentPreview();
+          refreshFieldError('attachment', true);
+          updateSubmitState();
+          return;
+        }
+        const valid = validateAttachmentFile(file);
+        if (valid !== true) {
+          resetAttachmentPreview();
+          setError('attachment', valid);
+          attachmentEl.value = '';
+          updateSubmitState();
+          return;
+        }
+
+        attachmentPreviewWrapEl.style.display = 'block';
+        attachmentPreviewMetaEl.textContent = file.name + ' - ' + formatFileSize(file.size);
+        attachmentPreviewImgEl.src = URL.createObjectURL(file);
+        refreshFieldError('attachment', true);
+        updateSubmitState();
+      });
+
+      discountCodeEl.addEventListener('input', (e) => {
+        e.target.value = String(e.target.value || '').toUpperCase();
+        showDistanceInfo(distanceEl.value);
+      });
+
+      function syncCategoryByDistance() {
+        const distance = distanceEl.value;
+        const sex = String(sexEl.value || '').trim();
+
+        if (!sex) {
+          categoryEl.disabled = true;
+          categoryEl.innerHTML = '<option value="">Primero elegi sexo</option>';
+          return;
+        }
+
+        if (!distance) {
+          categoryEl.disabled = true;
+          categoryEl.innerHTML = '<option value="">Primero elegi distancia</option>';
+          return;
+        }
+
+        if (distance === walkersDistanceValue) {
+          const uniqueCategory = sex + ' - UNICA';
+          categoryEl.disabled = true;
+          categoryEl.innerHTML =
+            '<option value="' + uniqueCategory + '">' + uniqueCategory + '</option>';
+          categoryEl.value = uniqueCategory;
+          return;
+        }
+
+        if (distance === '11 KM') {
+          const previous = categoryEl.value;
+          const categoryOptionsBySex = categoryOptions11.map((opt) => sex + ' - ' + opt);
+          const options = ['<option value="">Seleccionar</option>'].concat(
+            categoryOptionsBySex.map((opt) => '<option value="' + opt + '">' + opt + '</option>')
+          );
+          categoryEl.disabled = false;
+          categoryEl.innerHTML = options.join('');
+          if (categoryOptionsBySex.indexOf(previous) !== -1) {
+            categoryEl.value = previous;
+          }
+        }
+      }
+
+      distanceEl.addEventListener('change', () => {
+        syncCategoryByDistance();
+        syncShirtSizeByDistance();
+        showDistanceInfo(distanceEl.value);
+        setError('category', '');
+        setError('shirtSize', '');
+      });
+      sexEl.addEventListener('change', () => {
+        syncCategoryByDistance();
+        setError('category', '');
+      });
+      syncCategoryByDistance();
+      syncShirtSizeByDistance();
+      showDistanceInfo(distanceEl.value);
+
+      const validators = {
+        fullName: (v) => {
+          const clean = v.trim().replace(/\s+/g, ' ');
+          if (clean.length < 4) return 'Completa nombre y apellido.';
+          if (clean.split(' ').length < 2) return 'Ingresa nombre y apellido.';
+          return true;
+        },
+        document: (v) => /^\d{6,12}$/.test(v.trim()) || 'Debe tener entre 6 y 12 digitos.',
+        birthDate: (v) => {
+          if (!v) return 'Completa la fecha de nacimiento.';
+          const d = new Date(v + 'T00:00:00');
+          const min = new Date('1900-01-01T00:00:00');
+          const now = new Date();
+          return (!isNaN(d.getTime()) && d >= min && d <= now) || 'Fecha invalida.';
+        },
+        email: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) || 'Email invalido.',
+        phone: (v) => /^[+\d\s\-()]{8,20}$/.test(v.trim()) || 'Telefono invalido.',
+        sex: (v) => sexOptions.indexOf(String(v || '').trim()) !== -1 || 'Selecciona un sexo.',
+        distance: (v) => !!v || 'Selecciona una distancia.',
+        category: (v, payload) => {
+          const sex = String(payload.sex || '').trim();
+          if (!sex) return 'Primero selecciona sexo.';
+          if (payload.distance === walkersDistanceValue) {
+            return v === sex + ' - UNICA' || 'Categoria invalida para 4 KM.';
+          }
+          if (payload.distance === '11 KM') {
+            const optionsBySex = categoryOptions11.map((opt) => sex + ' - ' + opt);
+            return optionsBySex.indexOf(v) !== -1 || 'Selecciona una categoria valida.';
+          }
+          return 'Primero selecciona una distancia.';
+        },
+        trainingGroup: (v) => v.trim().length >= 2 || 'Ingresa un grupo de entrenamiento.',
+        shirtSize: (v, payload) => {
+          if (payload.distance === walkersDistanceValue) {
+            return v === 'Sin Remera' || 'Para caminantes la opcion es Sin Remera.';
+          }
+          if (!v) return 'Selecciona un talle.';
+          return shirtSizeOptions.indexOf(v) !== -1 || 'Selecciona un talle valido.';
+        },
+        discountCode: (v) => {
+          const code = v.trim().toUpperCase();
+          if (!code) return true;
+          if (!/^[A-Z0-9_-]{3,20}$/.test(code)) return 'Codigo de descuento invalido.';
+          return validDiscountCodes.indexOf(code) !== -1 || 'Codigo de descuento no reconocido.';
+        },
+        attachment: () => {
+          const file = attachmentEl.files && attachmentEl.files[0];
+          return validateAttachmentFile(file);
+        }
+      };
+
+      function resetTouchedFields() {
+        Object.keys(validators).forEach((key) => {
+          touchedFields[key] = false;
+        });
+      }
+      resetTouchedFields();
+
+      function getPayload() {
+        const data = new FormData(form);
+        const payload = Object.fromEntries(data.entries());
+        // google.script.run no admite File/Blob en el payload.
+        // El archivo viaja como base64 en attachmentBase64.
+        delete payload.attachment;
+        payload.category = categoryEl.value || '';
+        if (payload.distance === walkersDistanceValue) {
+          payload.category = String(payload.sex || '').trim() + ' - UNICA';
+          payload.shirtSize = 'Sin Remera';
+        }
+        payload.discountCode = String(payload.discountCode || '').trim().toUpperCase();
+        return payload;
+      }
+
+      function setError(field, message) {
+        const el = document.getElementById(field + 'Error');
+        if (el) el.textContent = message || '';
+      }
+
+      function clearErrors() {
+        Object.keys(validators).forEach((key) => setError(key, ''));
+        statusEl.textContent = '';
+        statusEl.className = 'status';
+      }
+
+      function validateAll(payload, showErrors) {
+        const shouldShow = showErrors !== false;
+        let ok = true;
+        Object.entries(validators).forEach(([field, validate]) => {
+          const result = validate(payload[field] || '', payload);
+          if (result !== true) {
+            ok = false;
+            if (shouldShow) setError(field, result);
+          } else if (shouldShow) {
+            setError(field, '');
+          }
+        });
+        return ok;
+      }
+
+      function refreshFieldError(fieldName, forceShow) {
+        if (!fieldName || !validators[fieldName]) return true;
+        const shouldShow = forceShow === true || touchedFields[fieldName] === true;
+        if (!shouldShow) return true;
+
+        const payload = getPayload();
+        const result = validators[fieldName](payload[fieldName] || '', payload);
+        setError(fieldName, result === true ? '' : result);
+        return result === true;
+      }
+
+      function updateSubmitState() {
+        const payload = getPayload();
+        const isOpen = isRegistrationOpenByDate(new Date());
+        submitBtn.disabled = !isOpen || !validateAll(payload, false);
+      }
+
+      function setStatus(message, isError) {
+        statusEl.textContent = message || '';
+        statusEl.className = isError ? 'status error' : 'status success';
+      }
+
+      function showSuccessPanel() {
+        form.classList.add('hidden');
+        successPanelEl.classList.add('show');
+      }
+
+      Array.from(form.querySelectorAll('input, select')).forEach((el) => {
+        if (!el.name) return;
+
+        const refreshCurrentAndDependencies = () => {
+          touchedFields[el.name] = true;
+          refreshFieldError(el.name, true);
+          if (el.name === 'distance') {
+            refreshFieldError('category', true);
+          }
+          if (el.name === 'discountCode' || el.name === 'distance') {
+            showDistanceInfo(distanceEl.value);
+          }
+        };
+
+        el.addEventListener('input', () => {
+          refreshCurrentAndDependencies();
+          updateSubmitState();
+        });
+        el.addEventListener('change', () => {
+          refreshCurrentAndDependencies();
+          updateSubmitState();
+        });
+        el.addEventListener('blur', () => {
+          refreshCurrentAndDependencies();
+          updateSubmitState();
+        });
+      });
+      updateSubmitState();
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        clearErrors();
+
+        if (!isRegistrationOpenByDate(new Date())) {
+          setStatus('La pre-inscripcion online finalizo el 1 de septiembre.', true);
+          updateSubmitState();
+          return;
+        }
+
+        const payload = getPayload();
+        if (!validateAll(payload, true)) {
+          updateSubmitState();
+          setStatus('Revisa los campos marcados.', true);
+          return;
+        }
+
+        submitBtn.disabled = true;
+        setStatus('Procesando imagen...', false);
+
+        try {
+          const attachmentPayload = await buildAttachmentPayload();
+          Object.assign(payload, attachmentPayload);
+        } catch (error) {
+          submitBtn.disabled = false;
+          setError('attachment', error.message || 'No se pudo procesar la imagen.');
+          setStatus('Revisa el adjunto.', true);
+          return;
+        }
+
+        setStatus('Enviando inscripcion...', false);
+
+        if (!(window.google && google.script && google.script.run)) {
+          submitBtn.disabled = false;
+          setStatus(
+            'No se puede enviar desde modo local. Publica y abre la Web App de Apps Script.',
+            true
+          );
+          return;
+        }
+
+        let settled = false;
+        const timeoutId = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          submitBtn.disabled = false;
+          setStatus(
+            'El servidor no respondio a tiempo. Revisa permisos y redeploy de Apps Script.',
+            true
+          );
+        }, 25000);
+
+        google.script.run
+          .withSuccessHandler((res) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            submitBtn.disabled = false;
+            form.reset();
+            resetTouchedFields();
+            syncCategoryByDistance();
+            syncShirtSizeByDistance();
+            showDistanceInfo(distanceEl.value);
+            resetAttachmentPreview();
+            updateSubmitState();
+            setStatus('Inscripcion enviada con exito.', false);
+            showSuccessPanel();
+          })
+          .withFailureHandler((err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            updateSubmitState();
+            setStatus((err && err.message) || 'No se pudo enviar. Intenta de nuevo.', true);
+          })
+          .submitRegistration(payload);
+      });
+    </script>
+  </body>
+</html>
