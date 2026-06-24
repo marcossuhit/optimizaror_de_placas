@@ -1,0 +1,20 @@
+{
+  "declaracionJurada": {
+    "cuit": "30710404611",
+    "quincena": 2,
+    "actividadId": 6,
+    "anio": 2026,
+    "mes": 4
+  },
+  "comprobante": {
+    "cuitContribuyente": "20123456789",
+    "cuitAgente": "30710404611",
+    "sucursal": "00001",
+    "mes": 4,
+    "alicuota": 3.5,
+    "baseImponible": 100000.0,
+    "importeRetencion": 3500.0,
+    "razonSocialContribuyente": "CONTRIBUYENTE DEMO SA",
+    "fechaOperacion": "2026-04-25T10:30:00.000"
+  }
+}
