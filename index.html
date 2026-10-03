@@ -71,7 +71,35 @@
                 </select>
               </label>
             </div>
+
             <div id="plates" class="plates"></div>
+
+            <section class="hardware-budget" aria-labelledby="hardwareBudgetTitle">
+              <h3 id="hardwareBudgetTitle" class="hardware-budget-title">Herrajes</h3>
+              <div class="hardware-picker-row">
+                <label class="hardware-picker" for="hardwareSelect">
+                  Seleccionar herraje
+                  <select id="hardwareSelect" disabled>
+                    <option value="">Cargando herrajes…</option>
+                  </select>
+                </label>
+                <button id="addHardwareBtn" class="btn primary hardware-add-btn" type="button" disabled>Agregar al presupuesto</button>
+              </div>
+              <div id="hardwareSelectionPreview" class="hardware-selection-preview hidden">
+                <img id="hardwareSelectionImage" class="hidden" alt="Imagen del herraje seleccionado" />
+                <span id="hardwareSelectionNoImage" class="hardware-selection-no-image">Sin imagen disponible</span>
+                <div class="hardware-selection-details">
+                  <strong id="hardwareSelectionName"></strong>
+                  <span id="hardwareSelectionPrice"></span>
+                </div>
+              </div>
+              <div id="hardwareCart" class="hardware-cart" aria-live="polite"></div>
+              <p id="hardwareCartEmpty" class="hardware-cart-empty">Todavía no agregaste herrajes</p>
+              <div class="hardware-subtotal-row">
+                <span>Subtotal de herrajes</span>
+                <strong id="hardwareSubtotal">$ 0</strong>
+              </div>
+            </section>
           </section>
 
           <section id="rows" class="rows">
@@ -103,7 +131,7 @@
         </div>
 
         <aside class="summary" id="summaryPanel">
-          <h2 class="summary-title">Detalle de Placas</h2>
+          <h2 class="summary-title">Presupuesto y detalle</h2>
           <div id="summaryPieces" class="summary-stat" style="display:none;">Piezas colocadas: 0</div>
           <div id="summaryPlates" class="summary-stat" style="display:none;">Placas utilizadas: 0</div>
           <div id="summaryPlateCost" class="summary-stat" style="display:none;">Costo placas: $0</div>
@@ -188,6 +216,7 @@
     <script src="email-provider-config.js"></script>
     <script src="email-provider.js"></script>
     <script src="auth.js"></script>
+    <script src="material-image-api.js"></script>
     <script type="module" src="app.js"></script>
   </body>
   </html>

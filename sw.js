@@ -1,8 +1,9 @@
-const CACHE_NAME = 'cortes-cache-v5';
+const CACHE_NAME = 'cortes-cache-v7';
 const PRECACHE = [
   './',
   './index.html',
   './app.js',
+  './material-image-api.js',
   './manifest.webmanifest'
 ];
 const NON_CACHE_PATHS = new Set([

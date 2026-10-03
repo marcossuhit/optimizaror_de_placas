@@ -19,7 +19,6 @@
         const hash = window.location.hash.startsWith('#') ? window.location.hash.substring(1) : window.location.search.substring(1);
         const params = new URLSearchParams(hash);
         const idToken = params.get('id_token');
-        const accessToken = params.get('access_token');
         const state = params.get('state');
         if (!idToken) {
           alert('No se recibió el token de Google. Intentá iniciar sesión nuevamente.');
@@ -27,7 +26,7 @@
           return;
         }
         const payload = window.Auth.decodeJwt(idToken);
-        if (!payload || !payload.email) {
+        if (!payload || !payload.email || payload.email_verified !== true) {
           alert('No se pudo validar la cuenta de Google.');
           window.location.replace('login.html');
           return;
@@ -48,8 +47,8 @@
           email: payload.email,
           name: payload.name || payload.email,
           picture: payload.picture || '',
+          provider: 'google',
           idToken,
-          accessToken,
           state,
           fetchedAt: Date.now()
         };

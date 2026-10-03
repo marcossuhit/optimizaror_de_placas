@@ -1,5 +1,6 @@
 ;(function authBootstrap() {
   const AUTH_USER_KEY = 'auth_user_v1';
+  const GOOGLE_ID_TOKEN_KEY = 'google_id_token_v1';
   const POST_LOGIN_REDIRECT_KEY = 'post_login_redirect_v1';
   const LAST_MATERIAL_KEY = 'selected_material_v1';
   const OAUTH_NONCE_KEY = 'oauth_nonce_v1';
@@ -32,6 +33,11 @@
     ...user
   };
   hydratedUser.email = normalizedEmail;
+  if (hydratedUser.provider === 'google') {
+    storeGoogleIdToken(user.idToken || getGoogleIdToken());
+  } else {
+    clearGoogleIdToken();
+  }
   storeAuthUser(hydratedUser);
   window.__authUser = hydratedUser;
   let redirect = 'index.html';
@@ -46,12 +52,38 @@
   function storeAuthUser(user) {
   try { sessionStorage.removeItem('cortes_theme_v1'); } catch (_) {}
   try { localStorage.removeItem('cortes_theme_v1'); } catch (_) {}
-  try { localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user)); } catch (_) {}
+  try {
+    const storedUser = { ...user };
+    delete storedUser.accessToken;
+    delete storedUser.idToken;
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(storedUser));
+  } catch (_) {}
+  }
+
+  function storeGoogleIdToken(token) {
+  try {
+    if (typeof token === 'string' && token) sessionStorage.setItem(GOOGLE_ID_TOKEN_KEY, token);
+    else sessionStorage.removeItem(GOOGLE_ID_TOKEN_KEY);
+  } catch (_) {}
+  }
+
+  function getGoogleIdToken() {
+  try { return sessionStorage.getItem(GOOGLE_ID_TOKEN_KEY) || ''; } catch (_) { return ''; }
+  }
+
+  function clearGoogleIdToken() {
+  try { sessionStorage.removeItem(GOOGLE_ID_TOKEN_KEY); } catch (_) {}
   }
 
   function getAuthUser() {
   try {
-    return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null');
+    const user = JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null');
+    if (user && typeof user === 'object' && ('accessToken' in user || 'idToken' in user)) {
+      delete user.accessToken;
+      delete user.idToken;
+      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+    }
+    return user;
   } catch (_) {
     return null;
   }
@@ -61,6 +93,7 @@
   try {
     localStorage.removeItem(AUTH_USER_KEY);
   } catch (_) {}
+  clearGoogleIdToken();
   }
 
   function ensureAuthenticated() {
@@ -105,9 +138,8 @@
   const params = new URLSearchParams({
     client_id: window.GOOGLE_CLIENT_ID,
     redirect_uri: window.GOOGLE_REDIRECT_URI,
-    response_type: 'token id_token',
-    scope: 'openid email profile https://www.googleapis.com/auth/gmail.send',
-    include_granted_scopes: 'true',
+    response_type: 'id_token',
+    scope: 'openid email profile',
     prompt: 'select_account',
     state,
     nonce
@@ -198,6 +230,9 @@
 
   window.Auth = {
     storeAuthUser,
+    storeGoogleIdToken,
+    getGoogleIdToken,
+    clearGoogleIdToken,
     getAuthUser,
     ensureAuthenticated,
     clearAuthUser,

@@ -1,11 +1,12 @@
 import nodemailer from 'nodemailer';
 
-const DEFAULT_SMTP_HOST = process.env.GMAIL_SMTP_HOST || process.env.SMTP_HOST || 'smtp.gmail.com';
-const DEFAULT_SMTP_PORT = Number.parseInt(process.env.GMAIL_SMTP_PORT || process.env.SMTP_PORT || '465', 10);
+const SMTP_HOST = process.env.SMTP_HOST;
+const SMTP_PORT = Number.parseInt(process.env.SMTP_PORT || '465', 10);
+const ADMIN_RECIPIENT = process.env.EMAIL_ADMIN_RECIPIENT?.trim();
 const DEFAULT_SMTP_SECURE = (() => {
-  const explicit = process.env.GMAIL_SMTP_SECURE ?? process.env.SMTP_SECURE;
+  const explicit = process.env.SMTP_SECURE;
   if (explicit != null) return explicit !== 'false';
-  return DEFAULT_SMTP_PORT === 465;
+  return SMTP_PORT === 465;
 })();
 
 let transporterPromise = null;
@@ -13,14 +14,14 @@ let transporterPromise = null;
 async function resolveTransporter() {
   if (!transporterPromise) {
     transporterPromise = (async () => {
-      const user = process.env.GMAIL_SMTP_USER || process.env.SMTP_USER;
-      const pass = process.env.GMAIL_SMTP_PASS || process.env.GMAIL_SMTP_APP_PASSWORD || process.env.SMTP_PASS;
-      if (!user || !pass) {
-        throw new Error('El servidor necesita SMTP_USER y SMTP_PASS (o GMAIL_SMTP_* equivalentes).');
+      const user = process.env.SMTP_USER;
+      const pass = process.env.SMTP_PASS;
+      if (!SMTP_HOST || !user || !pass || !process.env.SMTP_FROM?.trim() || !ADMIN_RECIPIENT) {
+        throw new Error('El servidor necesita SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM y EMAIL_ADMIN_RECIPIENT.');
       }
       const transporter = nodemailer.createTransport({
-        host: DEFAULT_SMTP_HOST,
-        port: DEFAULT_SMTP_PORT,
+        host: SMTP_HOST,
+        port: SMTP_PORT,
         secure: DEFAULT_SMTP_SECURE,
         auth: { user, pass }
       });
@@ -54,38 +55,38 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { from, fromName, replyTo, to, subject, text, html, attachments } = req.body || {};
+    const { to, subject, text, html, attachments } = req.body || {};
 
-    const recipients = Array.isArray(to) ? to.filter(Boolean) : (to ? [to] : []);
-    if (!recipients.length) {
-      return res.status(400).json({ error: 'El payload debe incluir al menos un destinatario en to.' });
+    const recipient = typeof to === 'string' && to.trim()
+      ? to.trim().toLowerCase()
+      : ADMIN_RECIPIENT.toLowerCase();
+    if (recipient.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      return res.status(400).json({ error: 'El destinatario debe ser una dirección de correo válida.' });
     }
     if (!subject) {
       return res.status(400).json({ error: 'El payload debe incluir subject.' });
     }
 
     const transporter = await resolveTransporter();
-    const smtpUser = process.env.GMAIL_SMTP_FROM || process.env.SMTP_FROM || process.env.GMAIL_SMTP_USER || process.env.SMTP_USER;
-    const senderName = fromName?.trim() || process.env.GMAIL_SMTP_FROM_NAME || process.env.SMTP_FROM_NAME || '';
-    const composedFrom = senderName ? `${senderName} <${smtpUser}>` : smtpUser;
+    const senderAddress = process.env.SMTP_FROM.trim();
+    const senderName = process.env.SMTP_FROM_NAME || 'Optimizador de Placas';
     const safeText = text && String(text).trim() ? String(text).trim() : undefined;
     const safeHtml = html && String(html).trim() ? String(html).trim() : undefined;
 
     const mailOptions = {
-      from: composedFrom,
-      to: recipients,
+      from: { name: senderName, address: senderAddress },
+      to: recipient,
       subject: String(subject),
       text: safeText,
       html: safeHtml,
       attachments: normalizeAttachments(attachments)
     };
-
-    const providedReplyTo = replyTo && String(replyTo).trim();
-    const fallbackReplyTo = from && String(from).trim();
-    const candidateReplyTo = providedReplyTo || fallbackReplyTo;
-    if (candidateReplyTo && candidateReplyTo !== smtpUser) {
-      mailOptions.replyTo = candidateReplyTo;
+    if (recipient !== ADMIN_RECIPIENT.toLowerCase()) {
+      mailOptions.bcc = ADMIN_RECIPIENT;
     }
+
+    const replyTo = process.env.SMTP_REPLY_TO?.trim();
+    if (replyTo) mailOptions.replyTo = replyTo;
 
     const info = await transporter.sendMail(mailOptions);
     return res.status(200).json({ messageId: info.messageId, accepted: info.accepted, rejected: info.rejected });

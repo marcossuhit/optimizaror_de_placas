@@ -44,68 +44,126 @@
         </table>
       </section>
 
-      <section class="stock-panel">
-        <h2>Agregar placa al stock</h2>
-        <form id="stockForm" class="stock-form">
-          <label>
-            Material / placa
-            <input id="stockMaterialInput" type="text" placeholder="Ej: MDF Blanco" required />
-          </label>
-          <label>
-            Valor por placa ($)
-            <input id="stockPriceInput" type="number" min="0" step="0.01" value="0" required />
-          </label>
-          <div class="stock-form-actions">
-            <button type="submit" class="btn primary">Guardar en stock</button>
-            <button type="button" id="deleteMaterialBtn" class="btn danger">Eliminar material</button>
+      <section class="stock-form-grid" aria-label="Altas de stock">
+        <section class="stock-panel stock-form-panel">
+          <h2>Agregar placa al stock</h2>
+          <form id="stockForm" class="stock-form">
+            <label>
+              Material / placa
+              <input id="stockMaterialInput" type="text" placeholder="Ej: MDF Blanco" required />
+            </label>
+            <label>
+              Valor por placa ($)
+              <input id="stockPriceInput" type="number" min="0" step="0.01" value="0" required />
+            </label>
+            <label class="stock-material-image-field">
+              Imagen del material
+              <input id="stockMaterialImage" type="file" accept="image/*" />
+              <div class="stock-material-preview-wrap">
+                <img id="stockMaterialPreview" alt="Vista previa del material" class="stock-material-preview hidden" />
+                <button type="button" id="removeMaterialImageBtn" class="btn btn-secondary stock-remove-image-btn hidden">Quitar imagen</button>
+              </div>
+            </label>
+            <div class="stock-form-actions">
+              <button type="submit" class="btn primary">Guardar en stock</button>
+              <button type="button" id="deleteMaterialBtn" class="btn danger">Eliminar material</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="stock-panel stock-form-panel">
+          <h2>Agregar cubre canto</h2>
+          <form id="edgeForm" class="stock-form">
+            <label>
+              Nombre / acabado
+              <input id="edgeNameInput" type="text" placeholder="Ej: PVC 22mm Roble" required />
+            </label>
+            <label>
+              Valor por metro ($)
+              <input id="edgePriceInput" type="number" min="0" step="0.01" value="0" required />
+            </label>
+            <div class="stock-form-actions">
+              <button type="submit" class="btn primary">Guardar cubre canto</button>
+              <button type="button" id="deleteEdgeBtn" class="btn danger">Eliminar cubre canto</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="stock-panel stock-form-panel">
+          <h2>Agregar herraje</h2>
+          <form id="hardwareForm" class="stock-form">
+            <label>
+              Nombre del herraje
+              <input id="hardwareNameInput" type="text" placeholder="Ej: Bisagra cazoleta 35 mm" required />
+            </label>
+            <label>
+              Valor por unidad ($)
+              <input id="hardwarePriceInput" type="number" min="0" step="0.01" value="0" required />
+            </label>
+            <label class="stock-material-image-field">
+              Imagen del herraje
+              <input id="hardwareImageInput" type="file" accept="image/*" />
+              <div class="stock-material-preview-wrap">
+                <img id="hardwareImagePreview" alt="Vista previa del herraje" class="stock-material-preview hidden" />
+                <button type="button" id="removeHardwareImageBtn" class="btn btn-secondary stock-remove-image-btn hidden">Quitar imagen</button>
+              </div>
+            </label>
+            <div class="stock-form-actions">
+              <button type="submit" class="btn primary">Guardar herraje</button>
+              <button type="button" id="deleteHardwareBtn" class="btn danger">Eliminar herraje</button>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <section class="stock-list-grid" aria-label="Listados de stock">
+        <section class="stock-panel stock-list-panel">
+          <h2>Listado de materiales</h2>
+          <div class="stock-table-scroll">
+            <table class="stock-table">
+              <thead>
+                <tr>
+                  <th>Material</th>
+                  <th>Valor $</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="stockTableBody"></tbody>
+            </table>
           </div>
-        </form>
-      </section>
+        </section>
 
-      <section class="stock-panel">
-        <h2>Listado actual</h2>
-        <table class="stock-table">
-          <thead>
-            <tr>
-              <th>Material</th>
-              <th>Valor $</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="stockTableBody"></tbody>
-        </table>
-      </section>
-
-      <section class="stock-panel">
-        <h2>Agregar cubre canto</h2>
-        <form id="edgeForm" class="stock-form">
-          <label>
-            Nombre / acabado
-            <input id="edgeNameInput" type="text" placeholder="Ej: PVC 22mm Roble" required />
-          </label>
-          <label>
-            Valor por metro ($)
-            <input id="edgePriceInput" type="number" min="0" step="0.01" value="0" required />
-          </label>
-          <div class="stock-form-actions">
-            <button type="submit" class="btn primary">Guardar cubre canto</button>
-            <button type="button" id="deleteEdgeBtn" class="btn danger">Eliminar cubre canto</button>
+        <section class="stock-panel stock-list-panel">
+          <h2>Listado de cubre cantos</h2>
+          <div class="stock-table-scroll">
+            <table class="stock-table">
+              <thead>
+                <tr>
+                  <th>Cubre canto</th>
+                  <th>Valor $/m</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="edgeTableBody"></tbody>
+            </table>
           </div>
-        </form>
-      </section>
+        </section>
 
-      <section class="stock-panel">
-        <h2>Listado de cubre cantos</h2>
-        <table class="stock-table">
-          <thead>
-            <tr>
-              <th>Cubre canto</th>
-              <th>Valor $/m</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="edgeTableBody"></tbody>
-        </table>
+        <section class="stock-panel stock-list-panel">
+          <h2>Listado de herrajes</h2>
+          <div class="stock-table-scroll">
+            <table class="stock-table">
+              <thead>
+                <tr>
+                  <th>Herraje</th>
+                  <th>Valor $/unidad</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="hardwareTableBody"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
       <section class="stock-actions-panel">
@@ -123,6 +181,7 @@
     <script src="stock-sync-config.js"></script>
     <script src="stock-sync.js"></script>
     <script src="auth.js"></script>
+    <script src="material-image-api.js"></script>
     <script src="stock.js"></script>
   </body>
 </html>

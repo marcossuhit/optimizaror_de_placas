@@ -380,6 +380,16 @@ let pendingKerfValue = kerfInput && kerfInput.value ? kerfInput.value : '5';
 const summaryTotalEl = document.getElementById('summaryTotal');
 const summaryPlatesValueEl = document.getElementById('summaryPlatesValue');
 const summaryGrandTotalEl = document.getElementById('summaryGrandTotal');
+const hardwareSelectEl = document.getElementById('hardwareSelect');
+const hardwareSelectionPreviewEl = document.getElementById('hardwareSelectionPreview');
+const hardwareSelectionImageEl = document.getElementById('hardwareSelectionImage');
+const hardwareSelectionNameEl = document.getElementById('hardwareSelectionName');
+const hardwareSelectionPriceEl = document.getElementById('hardwareSelectionPrice');
+const hardwareSelectionNoImageEl = document.getElementById('hardwareSelectionNoImage');
+const addHardwareBtn = document.getElementById('addHardwareBtn');
+const hardwareCartEl = document.getElementById('hardwareCart');
+const hardwareCartEmptyEl = document.getElementById('hardwareCartEmpty');
+const hardwareSubtotalEl = document.getElementById('hardwareSubtotal');
 const summaryListEl = document.getElementById('summaryList');
 const sheetCanvasEl = document.getElementById('sheetCanvas');
 const sheetOverviewSection = document.querySelector('.sheet-overview');
@@ -446,6 +456,7 @@ let lastPlacementByRow = new Map(); // rowIdx -> { requested, placed, left }
 let currentMaterialName = plateMaterialSelect?.value || '';
 const STOCK_STORAGE_KEY = 'stock_items_v1';
 const ADMIN_STORAGE_KEY = 'admin_items_v1';
+const HARDWARE_STORAGE_KEY = 'hardware_items_v1';
 const STOCK_TEXT_FALLBACK = 'stock.txt';
 let lastFetchedStockItems = [];
 let lastFeasibleStateSnapshot = null;
@@ -455,8 +466,13 @@ let lastStockAlertTs = 0;
 const STOCK_ALERT_COOLDOWN_MS = 1500;
 let remoteStockSnapshot = null;
 let remoteEdgeSnapshot = null;
+let remoteHardwareSnapshot = null;
+let hardwareCatalog = [];
+let hardwareCart = [];
+let hardwareImageRequestId = 0;
 let lastPlateCostSummary = { unit: 0, total: 0, count: 0, material: '' };
 let lastEdgeCostSummary = { totalMeters: 0, totalCost: 0, entries: [] };
+let lastHardwareCostSummary = { total: 0, entries: [] };
 
 const LAYOUT_RECALC_DEBOUNCE_MS = 800; // Aumentado de 400ms a 800ms para mejor performance
 let layoutRecalcTimer = null;
@@ -1122,6 +1138,98 @@ function emergencyStopSolver() {
   }, 2000);
 }
 
+function readMaterialImageMap() {
+  try {
+    const raw = localStorage.getItem('material_gallery_v1');
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function getMaterialImageForDisplay(materialName) {
+  const material = String(materialName || '').trim();
+  if (!material) return '';
+  const key = material.toLocaleLowerCase();
+  const map = readMaterialImageMap();
+  return map[key] || '';
+}
+
+function showMaterialPreviewDialog(materialName, imageSource = '') {
+  const material = String(materialName || '').trim();
+  if (!material) return;
+  const imageData = imageSource || getMaterialImageForDisplay(material);
+  if (!imageData) return;
+
+  const existing = document.querySelector('.material-preview-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'app-dialog-overlay material-preview-overlay';
+
+  const dialog = document.createElement('div');
+  dialog.className = 'app-dialog material-preview-dialog';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.tabIndex = -1;
+
+  const header = document.createElement('header');
+  header.className = 'app-dialog-header';
+  const title = document.createElement('h2');
+  title.textContent = material;
+  header.appendChild(title);
+
+  const body = document.createElement('div');
+  body.className = 'app-dialog-body material-preview-body';
+
+  const image = document.createElement('img');
+  image.src = imageData;
+  image.alt = `Vista previa de ${material}`;
+  image.className = 'material-preview-image';
+  body.appendChild(image);
+
+  const note = document.createElement('p');
+  note.textContent = 'Material disponible en stock';
+  note.className = 'material-preview-note';
+  body.appendChild(note);
+
+  const actions = document.createElement('footer');
+  actions.className = 'app-dialog-actions';
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'btn primary';
+  closeBtn.textContent = 'Cerrar';
+
+  function closeDialog() {
+    overlay.remove();
+    document.body.classList.remove('dialog-open');
+    document.removeEventListener('keydown', onKeyDown);
+  }
+
+  function onKeyDown(event) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeDialog();
+    }
+  }
+
+  closeBtn.addEventListener('click', closeDialog);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) closeDialog();
+  });
+  document.addEventListener('keydown', onKeyDown);
+
+  actions.appendChild(closeBtn);
+  dialog.append(header, body, actions);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  document.body.classList.add('dialog-open');
+  dialog.focus();
+  setTimeout(() => closeBtn.focus(), 0);
+}
+
 function showAppDialog({ title = 'Aviso', message = '', tone = 'info' } = {}) {
   const normalizedTone = ['success', 'error', 'warning'].includes(tone) ? tone : 'info';
   const existing = document.querySelector('.app-dialog-overlay');
@@ -1240,6 +1348,29 @@ function normalizeEdgeEntries(items) {
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
 
+function normalizeHardwareEntries(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => ({
+      name: String(item?.name || '').trim(),
+      unitPrice: Number.parseFloat(item?.unitPrice ?? item?.price) || 0
+    }))
+    .filter((item) => item.name)
+    .map((item) => ({ name: item.name, unitPrice: item.unitPrice >= 0 ? item.unitPrice : 0 }))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
+function normalizeHardwareSelections(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => ({
+      name: String(item?.name || '').trim(),
+      unitPrice: Math.max(0, Number.parseFloat(item?.unitPrice) || 0),
+      quantity: Math.floor(Number(item?.quantity) || 0)
+    }))
+    .filter((item) => item.name && item.quantity > 0);
+}
+
 function stockEntriesEqual(a, b) {
   if (a === b) return true;
   if (!Array.isArray(a) || !Array.isArray(b)) return false;
@@ -1259,8 +1390,18 @@ function edgeEntriesEqual(a, b) {
   }
   return true;
 }
+
+function hardwareEntriesEqual(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].name !== b[i].name || a[i].unitPrice !== b[i].unitPrice) return false;
+  }
+  return true;
+}
 let remoteStockUnsubscribe = null;
 let remoteEdgeUnsubscribe = null;
+let remoteHardwareUnsubscribe = null;
 let remoteAdminUnsubscribe = null;
 
 function resetSummaryUI() {
@@ -1279,6 +1420,8 @@ function resetSummaryUI() {
   if (summaryListEl) summaryListEl.innerHTML = '';
   if (summaryPlatesValueEl) summaryPlatesValueEl.innerHTML = '';
   if (summaryGrandTotalEl) summaryGrandTotalEl.innerHTML = '';
+  lastPlateCostSummary = { unit: 0, total: 0, count: 0, material: currentMaterialName || '' };
+  lastEdgeCostSummary = { totalMeters: 0, totalCost: 0, entries: [] };
   if (layoutRecommendationEl) {
     layoutRecommendationEl.style.display = 'none';
     layoutRecommendationEl.textContent = '';
@@ -1298,6 +1441,7 @@ function resetSummaryUI() {
   if (typeof updateCNCButtonState === 'function') {
     updateCNCButtonState();
   }
+  updateCostSummary();
 }
 
 /**
@@ -1550,6 +1694,223 @@ function handleRemoteAdminUpdate(items) {
   refreshBackofficeAccess();
 }
 
+function getHardwareImageReference(name) {
+  const normalized = String(name || '').trim();
+  return normalized ? `Herraje: ${normalized}` : '';
+}
+
+function renderHardwareCatalog() {
+  if (!hardwareSelectEl) return;
+  const selectedName = hardwareSelectEl.value;
+  hardwareSelectEl.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = hardwareCatalog.length ? 'Seleccionar herraje' : 'Sin herrajes disponibles';
+  hardwareSelectEl.appendChild(placeholder);
+
+  hardwareCatalog.forEach((item) => {
+    const option = document.createElement('option');
+    option.value = item.name;
+    option.textContent = item.name;
+    hardwareSelectEl.appendChild(option);
+  });
+
+  hardwareSelectEl.disabled = !hardwareCatalog.length;
+  hardwareSelectEl.value = hardwareCatalog.some((item) => item.name === selectedName) ? selectedName : '';
+  renderHardwareSelection(hardwareSelectEl.value);
+}
+
+async function renderHardwareSelection(name) {
+  const requestId = ++hardwareImageRequestId;
+  if (addHardwareBtn) addHardwareBtn.disabled = !name;
+  if (!hardwareSelectionPreviewEl) return;
+  if (!name) {
+    hardwareSelectionPreviewEl.classList.add('hidden');
+    if (hardwareSelectionImageEl) hardwareSelectionImageEl.src = '';
+    return;
+  }
+
+  const item = hardwareCatalog.find((entry) => entry.name === name);
+  if (!item) return;
+  hardwareSelectionPreviewEl.classList.remove('hidden');
+  if (hardwareSelectionNameEl) hardwareSelectionNameEl.textContent = item.name;
+  if (hardwareSelectionPriceEl) hardwareSelectionPriceEl.textContent = `$ ${formatNumber(item.unitPrice, 2)} por unidad`;
+  if (hardwareSelectionImageEl) {
+    hardwareSelectionImageEl.src = '';
+    hardwareSelectionImageEl.classList.add('hidden');
+  }
+  if (hardwareSelectionNoImageEl) {
+    hardwareSelectionNoImageEl.textContent = 'Buscando imagen…';
+    hardwareSelectionNoImageEl.classList.remove('hidden');
+  }
+
+  if (!window.MaterialImages?.get) {
+    if (hardwareSelectionNoImageEl) hardwareSelectionNoImageEl.textContent = 'Sin imagen disponible';
+    return;
+  }
+  try {
+    const result = await window.MaterialImages.get(getHardwareImageReference(name));
+    if (requestId !== hardwareImageRequestId || hardwareSelectEl?.value !== name) return;
+    if (result.imageUrl && hardwareSelectionImageEl) {
+      hardwareSelectionImageEl.src = result.imageUrl;
+      hardwareSelectionImageEl.classList.remove('hidden');
+      hardwareSelectionNoImageEl?.classList.add('hidden');
+    } else if (hardwareSelectionNoImageEl) {
+      hardwareSelectionNoImageEl.textContent = 'Sin imagen disponible';
+    }
+  } catch (error) {
+    console.warn('App: no se pudo consultar la imagen del herraje', error);
+    if (requestId === hardwareImageRequestId && hardwareSelectionNoImageEl) {
+      hardwareSelectionNoImageEl.textContent = 'Imagen no disponible';
+    }
+  }
+}
+
+function renderHardwareCart() {
+  const catalogByName = new Map(hardwareCatalog.map((item) => [item.name.toLocaleLowerCase(), item]));
+  hardwareCart = hardwareCart
+    .map((entry) => {
+      const current = catalogByName.get(entry.name.toLocaleLowerCase());
+      return {
+        name: entry.name,
+        unitPrice: current ? current.unitPrice : entry.unitPrice,
+        quantity: Math.max(1, Math.floor(Number(entry.quantity) || 1))
+      };
+    })
+    .filter((entry) => entry.name)
+    .sort((a, b) => {
+      const aIndex = hardwareCart.findIndex((item) => item.name.toLocaleLowerCase() === a.name.toLocaleLowerCase());
+      const bIndex = hardwareCart.findIndex((item) => item.name.toLocaleLowerCase() === b.name.toLocaleLowerCase());
+      return bIndex - aIndex;
+    });
+
+  if (hardwareCartEl) hardwareCartEl.replaceChildren();
+  const entries = hardwareCart.map((entry) => ({
+    ...entry,
+    total: entry.unitPrice * entry.quantity
+  }));
+
+  entries.forEach((entry) => {
+    if (!hardwareCartEl) return;
+    const row = document.createElement('div');
+    row.className = 'hardware-cart-row';
+
+    const main = document.createElement('div');
+    main.className = 'hardware-cart-main';
+    const details = document.createElement('div');
+    details.className = 'hardware-cart-details';
+    const name = document.createElement('span');
+    name.className = 'hardware-cart-name';
+    name.textContent = entry.name;
+    const unitPrice = document.createElement('span');
+    unitPrice.className = 'hardware-cart-unit-price';
+    unitPrice.textContent = `$ ${formatNumber(entry.unitPrice, 2)} c/u`;
+    details.append(name, unitPrice);
+
+    const lineTotal = document.createElement('span');
+    lineTotal.className = 'hardware-cart-line-total';
+    lineTotal.textContent = `$ ${formatNumber(entry.total, 2)}`;
+    main.append(details, lineTotal);
+
+    const controls = document.createElement('div');
+    controls.className = 'hardware-cart-controls';
+    const image = document.createElement('img');
+    image.className = 'hardware-cart-image';
+    image.alt = `${entry.name}`;
+    image.loading = 'lazy';
+    const reference = getHardwareImageReference(entry.name);
+    if (reference && window.MaterialImages?.get) {
+      window.MaterialImages.get(reference)
+        .then((result) => {
+          if (result?.imageUrl) image.src = result.imageUrl;
+        })
+        .catch(() => {
+          image.removeAttribute('src');
+        });
+    }
+    const decrement = document.createElement('button');
+    decrement.type = 'button';
+    decrement.className = 'hardware-quantity-btn';
+    decrement.textContent = '-';
+    decrement.setAttribute('aria-label', `Restar una unidad de ${entry.name}`);
+    decrement.addEventListener('click', () => changeHardwareQuantity(entry.name, -1));
+    const quantity = document.createElement('span');
+    quantity.className = 'hardware-cart-quantity';
+    quantity.textContent = String(entry.quantity);
+    const increment = document.createElement('button');
+    increment.type = 'button';
+    increment.className = 'hardware-quantity-btn';
+    increment.textContent = '+';
+    increment.setAttribute('aria-label', `Agregar una unidad de ${entry.name}`);
+    increment.addEventListener('click', () => changeHardwareQuantity(entry.name, 1));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'hardware-remove-btn';
+    remove.textContent = '×';
+    remove.title = `Quitar ${entry.name}`;
+    remove.setAttribute('aria-label', `Quitar ${entry.name}`);
+    remove.addEventListener('click', () => removeHardwareFromCart(entry.name));
+    controls.append(image, decrement, quantity, increment, remove);
+
+    row.append(main, controls);
+    hardwareCartEl.appendChild(row);
+  });
+
+  const total = entries.reduce((sum, entry) => sum + entry.total, 0);
+  lastHardwareCostSummary = { total, entries };
+  if (hardwareCartEmptyEl) hardwareCartEmptyEl.classList.toggle('hidden', entries.length > 0);
+  if (hardwareSubtotalEl) hardwareSubtotalEl.textContent = `$ ${formatNumber(total, 2)}`;
+  updateCostSummary();
+}
+
+function addSelectedHardware() {
+  const name = hardwareSelectEl?.value || '';
+  const item = hardwareCatalog.find((entry) => entry.name === name);
+  if (!item) return;
+  const existing = hardwareCart.find((entry) => entry.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+  if (existing) {
+    existing.quantity += 1;
+    hardwareCart = [existing, ...hardwareCart.filter((entry) => entry !== existing)];
+  } else {
+    hardwareCart = [{ name: item.name, unitPrice: item.unitPrice, quantity: 1 }, ...hardwareCart];
+  }
+  if (hardwareSelectEl) {
+    hardwareSelectEl.value = '';
+    renderHardwareSelection('');
+  }
+  renderHardwareCart();
+  persistState();
+}
+
+function changeHardwareQuantity(name, delta) {
+  const entry = hardwareCart.find((item) => item.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+  if (!entry) return;
+  entry.quantity += delta;
+  if (entry.quantity <= 0) {
+    hardwareCart = hardwareCart.filter((item) => item !== entry);
+  }
+  renderHardwareCart();
+  persistState();
+}
+
+function removeHardwareFromCart(name) {
+  hardwareCart = hardwareCart.filter((entry) => entry.name.toLocaleLowerCase() !== name.toLocaleLowerCase());
+  renderHardwareCart();
+  persistState();
+}
+
+function handleRemoteHardwareUpdate(items) {
+  const normalized = normalizeHardwareEntries(items);
+  if (hardwareEntriesEqual(remoteHardwareSnapshot || [], normalized)) return;
+  remoteHardwareSnapshot = normalized.slice();
+  hardwareCatalog = normalized;
+  if (isBackofficeAllowed) {
+    try { localStorage.setItem(HARDWARE_STORAGE_KEY, JSON.stringify(normalized)); } catch (_) {}
+  }
+  renderHardwareCatalog();
+  renderHardwareCart();
+}
+
 function initRemoteSynchronisation() {
   if (!REMOTE_STOCK_SYNC_ENABLED) return;
   try {
@@ -1560,15 +1921,20 @@ function initRemoteSynchronisation() {
   } catch (_) {}
   if (typeof remoteStockUnsubscribe === 'function') remoteStockUnsubscribe();
   if (typeof remoteEdgeUnsubscribe === 'function') remoteEdgeUnsubscribe();
+  if (typeof remoteHardwareUnsubscribe === 'function') remoteHardwareUnsubscribe();
   if (typeof remoteAdminUnsubscribe === 'function') remoteAdminUnsubscribe();
   remoteStockUnsubscribe = StockSync.watchStock(handleRemoteStockUpdate);
   remoteEdgeUnsubscribe = StockSync.watchEdges(handleRemoteEdgeUpdate);
+  remoteHardwareUnsubscribe = typeof StockSync.watchHardware === 'function'
+    ? StockSync.watchHardware(handleRemoteHardwareUpdate)
+    : null;
   remoteAdminUnsubscribe = typeof StockSync.watchAdmins === 'function'
     ? StockSync.watchAdmins(handleRemoteAdminUpdate)
     : null;
   window.addEventListener('beforeunload', () => {
     if (typeof remoteStockUnsubscribe === 'function') remoteStockUnsubscribe();
     if (typeof remoteEdgeUnsubscribe === 'function') remoteEdgeUnsubscribe();
+    if (typeof remoteHardwareUnsubscribe === 'function') remoteHardwareUnsubscribe();
     if (typeof remoteAdminUnsubscribe === 'function') remoteAdminUnsubscribe();
   }, { once: true });
   if (typeof StockSync.getStockSnapshot === 'function') {
@@ -1583,6 +1949,13 @@ function initRemoteSynchronisation() {
       if (Array.isArray(items) && items.length) handleRemoteEdgeUpdate(items);
     }).catch((err) => {
       console.error('App: error obteniendo snapshot inicial de cubre cantos', err);
+    });
+  }
+  if (typeof StockSync.getHardwareSnapshot === 'function') {
+    StockSync.getHardwareSnapshot().then((items) => {
+      if (Array.isArray(items)) handleRemoteHardwareUpdate(items);
+    }).catch((err) => {
+      console.error('App: error obteniendo herrajes remotos', err);
     });
   }
   if (typeof StockSync.getAdminSnapshot === 'function') {
@@ -4378,6 +4751,12 @@ if (platesEl && addPlateBtn) {
 }
 
 initRemoteSynchronisation();
+if (hardwareSelectEl) {
+  hardwareSelectEl.addEventListener('change', () => renderHardwareSelection(hardwareSelectEl.value));
+}
+if (addHardwareBtn) addHardwareBtn.addEventListener('click', addSelectedHardware);
+renderHardwareCatalog();
+renderHardwareCart();
 refreshMaterialOptions();
 refreshEdgeCatalog();
 window.addEventListener('focus', () => {
@@ -4387,6 +4766,12 @@ window.addEventListener('focus', () => {
 window.addEventListener('storage', (event) => {
   if (event.key === STOCK_STORAGE_KEY) refreshMaterialOptions();
   if (event.key === EDGE_STORAGE_KEY) refreshEdgeCatalog();
+  if (event.key === HARDWARE_STORAGE_KEY && isBackofficeAllowed) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(HARDWARE_STORAGE_KEY) || '[]');
+      handleRemoteHardwareUpdate(stored);
+    } catch (_) {}
+  }
 });
 
 toggleActionButtons(isSheetComplete());
@@ -4443,7 +4828,16 @@ function serializeState() {
     timestamp: Date.now() // Para validar que no sea muy vieja
   } : null;
   
-  return { name, plates, rows, kerfMm, autoRotate, material, savedSolution };
+  return {
+    name,
+    plates,
+    rows,
+    kerfMm,
+    autoRotate,
+    material,
+    hardwareSelections: normalizeHardwareSelections(hardwareCart),
+    savedSolution
+  };
 }
 
 function persistState() {
@@ -4922,6 +5316,7 @@ function loadState(state) {
   }
   immediateRecalcNeeded = false;
   layoutRecalcPending = false;
+  hardwareCart = normalizeHardwareSelections(state.hardwareSelections);
 
   // Al cargar proyecto, partir de estado visual clásico para evitar que
   // una optimización avanzada previa sobrescriba el layout guardado.
@@ -5131,7 +5526,7 @@ function loadState(state) {
   } else {
     console.log('ℹ️ No hay solución guardada en el JSON');
   }
-  
+  renderHardwareCart();
   persistState();
 }
 
@@ -7049,12 +7444,28 @@ if (edgeCatalogSelect) {
   edgeCatalogSelect.addEventListener('change', () => updateEdgeCatalogSelectTitle(edgeCatalogSelect));
 }
 if (plateMaterialSelect) {
+  let materialImageRequestId = 0;
   plateMaterialSelect.addEventListener('change', () => {
     const value = plateMaterialSelect.value;
     if (value) {
       currentMaterialName = value;
       try { localStorage.setItem(LAST_MATERIAL_KEY, currentMaterialName); } catch (_) {}
+      const requestId = ++materialImageRequestId;
+      const showPreview = async () => {
+        let materialImage = '';
+        try {
+          const remoteImage = await window.MaterialImages?.get(value);
+          materialImage = remoteImage?.imageUrl || '';
+        } catch (error) {
+          console.warn('App: no se pudo consultar la imagen del material', error);
+        }
+        if (requestId !== materialImageRequestId || plateMaterialSelect.value !== value) return;
+        materialImage = materialImage || getMaterialImageForDisplay(value);
+        if (materialImage) showMaterialPreviewDialog(value, materialImage);
+      };
+      showPreview();
     } else {
+      materialImageRequestId++;
       currentMaterialName = '';
       try { localStorage.removeItem(LAST_MATERIAL_KEY); } catch (_) {}
     }
@@ -8035,16 +8446,26 @@ function buildSummaryReportAdmin() {
     });
   }
 
-  // COSTO TOTAL GENERAL (placas + cubre canto)
+  if (lastHardwareCostSummary.entries.length) {
+    lines.push('');
+    lines.push('Herrajes:');
+    lastHardwareCostSummary.entries.forEach((entry) => {
+      pushLine(`- ${entry.name}: ${entry.quantity} × $${fmt(entry.unitPrice, 2)} = $${fmt(entry.total, 2)}`);
+    });
+  }
+
+  // COSTO TOTAL GENERAL (placas + cubre canto + herrajes)
   const totalPlates = lastPlateCostSummary.total || 0;
   const totalEdge = lastEdgeCostSummary.totalCost || 0;
-  const grandTotal = totalPlates + totalEdge;
+  const totalHardware = lastHardwareCostSummary.total || 0;
+  const grandTotal = totalPlates + totalEdge + totalHardware;
   
   if (grandTotal > 0) {
     lines.push('');
     lines.push('💵 TOTAL GENERAL:');
     pushLine(`- Placas: $${fmt(totalPlates, 2)}`);
     pushLine(`- Cubre canto: $${fmt(totalEdge, 2)}`);
+    pushLine(`- Herrajes: $${fmt(totalHardware, 2)}`);
     pushLine(`- ═══════════════════`);
     pushLine(`- TOTAL: $${fmt(grandTotal, 2)}`);
   }
@@ -8105,6 +8526,14 @@ function buildSummaryReportClient() {
     pushLine(`- 📊 Total: ${fmt(lastEdgeCostSummary.totalMeters, 3)} m`);
     (lastEdgeCostSummary.entries || []).forEach(({ label, meters }) => {
       pushLine(`- 🎨 ${label}: ${fmt(meters, 3)} m`);
+    });
+  }
+
+  if (lastHardwareCostSummary.entries.length) {
+    lines.push('');
+    lines.push('Herrajes:');
+    lastHardwareCostSummary.entries.forEach((entry) => {
+      pushLine(`- ${entry.name}: ${entry.quantity} unidad(es)`);
     });
   }
 
@@ -8191,25 +8620,13 @@ function buildSummaryReportCommon(lines, pushLine, fmt) {
   return lines.join('\n');
 }
 
-async function sendEmailViaProvider({ from, to, subject, text, attachments = [], replyTo }) {
-  if (!to) throw new Error('El destinatario es obligatorio.');
-  const senderOverride = (window.EMAIL_PROVIDER_CONFIG?.fromOverride || '').trim();
-  const normalizedFrom = senderOverride || from;
-  if (!normalizedFrom) throw new Error('No hay remitente configurado para el correo.');
+async function sendEmailViaProvider({ to, subject, text, attachments = [] }) {
   const payload = {
-    from: normalizedFrom,
-    to,
     subject,
     text,
     attachments
   };
-  if (window.EMAIL_PROVIDER_CONFIG?.fromName) {
-    payload.fromName = window.EMAIL_PROVIDER_CONFIG.fromName;
-  }
-  const effectiveReplyTo = replyTo || (senderOverride && from && from !== senderOverride ? from : undefined);
-  if (effectiveReplyTo) {
-    payload.replyTo = effectiveReplyTo;
-  }
+  if (to) payload.to = to;
 
   if (typeof window.sendViaApi === 'function') {
     const result = await window.sendViaApi(payload);
@@ -8246,11 +8663,11 @@ async function sendEmailViaProvider({ from, to, subject, text, attachments = [],
   throw new Error('Proveedor de email no configurado.');
 }
 
-async function sendPlainEmail({ from, to, subject, text }) {
-  return sendEmailViaProvider({ from, to, subject, text, attachments: [], replyTo: from });
+async function sendPlainEmail({ to, subject, text }) {
+  return sendEmailViaProvider({ to, subject, text, attachments: [] });
 }
 
-async function sendEmailWithAttachment({ from, to, subject, text, filename, blob, attachments = [] }) {
+async function sendEmailWithAttachment({ to, subject, text, filename, blob, attachments = [] }) {
   const emailAttachments = [];
   
   // Si se pasa un blob individual (para compatibilidad)
@@ -8268,7 +8685,7 @@ async function sendEmailWithAttachment({ from, to, subject, text, filename, blob
     }
   }
   
-  return sendEmailViaProvider({ from, to, subject, text, attachments: emailAttachments, replyTo: from });
+  return sendEmailViaProvider({ to, subject, text, attachments: emailAttachments });
 }
 
 async function handleSendCuts() {
@@ -8282,11 +8699,6 @@ async function handleSendCuts() {
   }
   if (!authUser) {
     showAppDialog({ title: 'Necesitás iniciar sesión', message: 'Iniciá sesión antes de enviar los cortes.', tone: 'warning' });
-    return;
-  }
-  const fromEmail = (authUser.email || '').trim();
-  if (!fromEmail) {
-    showAppDialog({ title: 'Correo faltante', message: 'Tu usuario no tiene un correo configurado. Cerrá sesión e ingresá nuevamente.', tone: 'error' });
     return;
   }
   sendCutsBtn.disabled = true;
@@ -8313,14 +8725,13 @@ async function handleSendCuts() {
     const subjectName = rawName || title || 'Plano de cortes';
     const adminBodyText = `Se adjunta el plano de cortes "${subjectName}" generado desde la aplicación.`;
     const clientBodyText = `Se adjunta la configuración de cortes "${subjectName}" generado desde la aplicación. Para su futuro uso.`;
-    const adminEmail = 'fernandofreireadrian@gmail.com';
     const recipientsSent = [];
     const sendErrors = [];
 
     const buildAdminBody = () => `${adminBodyText}\n\n${buildSummaryReportAdmin()}`;
     const buildClientBody = () => `${clientBodyText}\n\n${buildSummaryReportClient()}`;
     
-    const sendTo = async (to, text, { attachPdf = true, attachJson = true } = {}) => {
+    const sendTo = async ({ to, text, attachPdf = true, attachJson = true }) => {
       const attachments = [];
       
       // Adjuntar PDF si se solicita
@@ -8334,12 +8745,11 @@ async function handleSendCuts() {
       }
       
       if (attachments.length === 0) {
-        await sendPlainEmail({ from: fromEmail, to, subject: `Plano de cortes - ${subjectName}`, text });
+        await sendPlainEmail({ to, subject: `Plano de cortes - ${subjectName}`, text });
         return;
       }
       
       await sendEmailWithAttachment({
-        from: fromEmail,
         to,
         subject: `Plano de cortes - ${subjectName}`,
         text,
@@ -8347,14 +8757,12 @@ async function handleSendCuts() {
       });
     };
 
-    if (adminEmail) {
-      try {
-        await sendTo(adminEmail, buildAdminBody(), { attachPdf: true, attachJson: true });
-        recipientsSent.push(adminEmail);
-      } catch (err) {
-        console.error('No se pudo enviar al administrador', err);
-        sendErrors.push(`No se pudo enviar a ${adminEmail}: ${err?.message || err}`);
-      }
+    try {
+      await sendTo({ text: buildAdminBody() });
+      recipientsSent.push('la cuenta administradora');
+    } catch (err) {
+      console.error('No se pudo enviar al administrador', err);
+      sendErrors.push(`No se pudo enviar el correo: ${err?.message || err}`);
     }
 
     const userEmail = (authUser.email || '').trim();
@@ -8362,11 +8770,11 @@ async function handleSendCuts() {
       const greeting = authUser.name ? `Hola ${authUser.name.trim()},` : 'Hola,';
       const userText = `${greeting}\n\n${buildClientBody()}\n\nSe adjunta el archivo JSON del proyecto para que puedas importarlo nuevamente en la app.`;
       try {
-        await sendTo(userEmail, userText, { attachPdf: false, attachJson: true });
+        await sendTo({ to: userEmail, text: userText, attachPdf: false, attachJson: true });
         recipientsSent.push(userEmail);
       } catch (err) {
-        console.error('No se pudo enviar al usuario final', err);
-        sendErrors.push(`No se pudo enviar a ${userEmail}: ${err?.message || err}`);
+        console.error('No se pudo enviar al usuario de la sesión', err);
+        sendErrors.push(`No se pudo enviar al usuario ${userEmail}: ${err?.message || err}`);
       }
     }
 
@@ -8375,17 +8783,16 @@ async function handleSendCuts() {
       if (sendErrors.some(msg => /Proveedor de email no configurado/.test(String(msg)))) {
         sendErrors.push('Configurá window.EMAIL_PROVIDER_ENDPOINT o window.GenericMailProvider para habilitar el envío automático de correos.');
       }
-      const successNote = recipientsSent.length ? `Se envió correctamente a: ${recipientsSent.join(', ')}.` : 'No se pudo completar ningún envío.';
+      const successNote = recipientsSent.length ? 'Se envió correctamente a la cuenta administradora.' : 'No se pudo completar el envío.';
       showAppDialog({
         title: 'Envío de correo con advertencias',
         message: `${sendErrors.join('\n')}\n${successNote}\n${downloadNotice}`,
         tone: 'warning'
       });
     } else {
-      const recipientLabel = recipientsSent.length ? recipientsSent.join(', ') : 'los destinatarios configurados';
       showAppDialog({
         title: 'Correo enviado',
-        message: `Se envió ${filename} a ${recipientLabel}.\n${downloadNotice}`,
+        message: `Se envió ${filename} a la cuenta administradora.\n${downloadNotice}`,
         tone: 'success'
       });
     }
@@ -8498,6 +8905,8 @@ if (whatsappLink) {
 }
 if (resetAllBtn) {
   resetAllBtn.addEventListener('click', () => {
+    hardwareCart = [];
+    renderHardwareCart();
     clearAllPlates();
     clearAllRows();
     if (projectNameEl) projectNameEl.value = '';
@@ -8694,6 +9103,7 @@ function updateCostSummary() {
   
   const edgeCost = lastEdgeCostSummary.totalCost || 0;
   const edgeMeters = lastEdgeCostSummary.totalMeters || 0;
+  const hardwareCost = lastHardwareCostSummary.total || 0;
   
   // Actualizar sección de costo de placas
   if (summaryPlatesValueEl) {
@@ -8714,13 +9124,13 @@ function updateCostSummary() {
   
   // Actualizar total general
   if (summaryGrandTotalEl) {
-    const grandTotal = plateCost + edgeCost;
+    const grandTotal = plateCost + edgeCost + hardwareCost;
     if (grandTotal > 0) {
       summaryGrandTotalEl.innerHTML = `
         <div class="grand-total-label">💵 Total General</div>
         <div class="grand-total-amount">$${fmt(grandTotal, 2)}</div>
         <div style="font-size:0.85em;color:#fbbf24;opacity:0.85;margin-top:4px;">
-          Placas: $${fmt(plateCost, 2)} + Cubre canto: $${fmt(edgeCost, 2)}
+          Placas: $${fmt(plateCost, 2)} + Cubre canto: $${fmt(edgeCost, 2)} + Herrajes: $${fmt(hardwareCost, 2)}
         </div>
       `;
       summaryGrandTotalEl.style.display = '';
@@ -10864,6 +11274,11 @@ function downloadFile(content, filename) {
 /**
  * Agrega el botón CNC a la interfaz
  */
+function isCNCAllowedUser() {
+  const email = (authUser?.email || '').trim().toLowerCase();
+  return email === 'marcossuhit@gmail.com';
+}
+
 function addCNCExportButton() {
   // Buscar el contenedor de botones de exportación
   const exportSection = document.querySelector('.export-group') ||
@@ -10887,10 +11302,9 @@ function addCNCExportButton() {
   cncBtn.innerHTML = '🔧 Generar CNC';
   cncBtn.title = 'Generar archivos CNC (.001, .002, etc.) para máquina de corte';
   cncBtn.onclick = generateCNCFiles;
-  
   exportSection.appendChild(cncBtn);
   
-  // Botón de prueba solicitado
+  // Botón de prueba solicitado, visible solo para el usuario autorizado
   const testBtn = document.createElement('button');
   testBtn.id = 'cncTestBtn';
   testBtn.className = 'btn';
@@ -10898,6 +11312,7 @@ function addCNCExportButton() {
   testBtn.innerHTML = '🧪 CNC TEST';
   testBtn.title = 'Botón de prueba (misma función que Generar CNC)';
   testBtn.onclick = generateCNCFiles;
+  testBtn.style.display = isCNCAllowedUser() ? '' : 'none';
   exportSection.appendChild(testBtn);
 
   // Actualizar estado del botón
@@ -10911,6 +11326,18 @@ function updateCNCButtonState() {
   const cncBtn = document.querySelector('#cncExportBtn');
   const testBtn = document.querySelector('#cncTestBtn');
   if (!cncBtn && !testBtn) {
+    return;
+  }
+
+  const testAllowed = isCNCAllowedUser();
+  if (testBtn) {
+    testBtn.style.display = testAllowed ? '' : 'none';
+    testBtn.disabled = !testAllowed;
+    testBtn.classList.toggle('disabled-btn', !testAllowed);
+    testBtn.style.opacity = testAllowed ? '1' : '0.5';
+  }
+
+  if (!testAllowed && !cncBtn) {
     return;
   }
   

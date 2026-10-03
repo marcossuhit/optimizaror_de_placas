@@ -15,11 +15,13 @@
     cachedStock: null,
     cachedEdges: null,
     cachedAdmins: null,
+    cachedHardware: null,
     authDisabled: false,
     watchers: {
       stock: new Set(),
       edges: new Set(),
-      admins: new Set()
+      admins: new Set(),
+      hardware: new Set()
     }
   };
 
@@ -185,6 +187,18 @@
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   }
 
+  function normaliseHardwareItems(items) {
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((item) => ({
+        name: String(item?.name || '').trim(),
+        unitPrice: Number.parseFloat(item?.unitPrice ?? item?.price) || 0
+      }))
+      .filter((item) => item.name)
+      .map((item) => ({ name: item.name, unitPrice: item.unitPrice >= 0 ? item.unitPrice : 0 }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }
+
   function normaliseAdminItems(items) {
     if (!Array.isArray(items)) return [];
     return items
@@ -215,6 +229,7 @@
     state.cachedStock = normaliseStockItems(data.stockItems);
     state.cachedEdges = normaliseEdgeItems(data.edgeItems);
     state.cachedAdmins = normaliseAdminItems(data.adminItems);
+    state.cachedHardware = normaliseHardwareItems(data.hardwareItems);
     const metadata = {
       updatedAt: data.stockUpdatedAt || data.updatedAt || null,
       updatedBy: data.stockUpdatedBy || null,
@@ -228,6 +243,11 @@
     };
     emit('edges', state.cachedEdges, edgeMetadata);
     emit('admins', state.cachedAdmins, metadata);
+    emit('hardware', state.cachedHardware, {
+      updatedAt: data.hardwareUpdatedAt || data.updatedAt || null,
+      updatedBy: data.hardwareUpdatedBy || null,
+      raw: data
+    });
   }
 
   async function ensureRealtimeListener() {
@@ -254,10 +274,13 @@
     if (type === 'admins' && Array.isArray(state.cachedAdmins)) {
       callback(state.cachedAdmins.slice(), { raw: state.lastDoc });
     }
+    if (type === 'hardware' && Array.isArray(state.cachedHardware)) {
+      callback(state.cachedHardware.slice(), { raw: state.lastDoc });
+    }
     ensureRealtimeListener();
     return () => {
       listeners.delete(callback);
-      if (!state.watchers.stock.size && !state.watchers.edges.size && !state.watchers.admins.size && state.unsubscribe) {
+      if (!state.watchers.stock.size && !state.watchers.edges.size && !state.watchers.admins.size && !state.watchers.hardware.size && state.unsubscribe) {
         state.unsubscribe();
         state.unsubscribe = null;
       }
@@ -269,6 +292,7 @@
     if (field === 'stock' && Array.isArray(state.cachedStock)) return state.cachedStock.slice();
     if (field === 'edges' && Array.isArray(state.cachedEdges)) return state.cachedEdges.slice();
     if (field === 'admins' && Array.isArray(state.cachedAdmins)) return state.cachedAdmins.slice();
+    if (field === 'hardware' && Array.isArray(state.cachedHardware)) return state.cachedHardware.slice();
     const ref = await getDocRef();
     if (!ref) return [];
     try {
@@ -278,6 +302,7 @@
       if (field === 'stock') return state.cachedStock.slice();
       if (field === 'edges') return state.cachedEdges.slice();
       if (field === 'admins') return state.cachedAdmins.slice();
+      if (field === 'hardware') return state.cachedHardware.slice();
       return [];
     } catch (err) {
       console.error('StockSync: no se pudo obtener snapshot', err);
@@ -323,6 +348,15 @@
           name: actor.name || ''
         };
       }
+    } else if (kind === 'hardware') {
+      base.hardwareItems = normaliseHardwareItems(items);
+      if (timestamp) base.hardwareUpdatedAt = timestamp;
+      if (actor) {
+        base.hardwareUpdatedBy = {
+          email: actor.email || '',
+          name: actor.name || ''
+        };
+      }
     }
     if (timestamp) base.updatedAt = timestamp;
     return base;
@@ -356,12 +390,15 @@
     watchStock: (cb) => subscribe('stock', cb),
     watchEdges: (cb) => subscribe('edges', cb),
     watchAdmins: (cb) => subscribe('admins', cb),
+    watchHardware: (cb) => subscribe('hardware', cb),
     getStockSnapshot: () => getSnapshotField('stock'),
     getEdgeSnapshot: () => getSnapshotField('edges'),
     getAdminSnapshot: () => getSnapshotField('admins'),
+    getHardwareSnapshot: () => getSnapshotField('hardware'),
     saveStock: (items, options) => saveItems('stock', items, options),
     saveEdges: (items, options) => saveItems('edges', items, options),
     saveAdmins: (items, options) => saveItems('admins', items, options),
+    saveHardware: (items, options) => saveItems('hardware', items, options),
     getLastMetadata,
     signOutFirebase: signOutFirebaseAuth,
     ensureFirebaseAuth,
