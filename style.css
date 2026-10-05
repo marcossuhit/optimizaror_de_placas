@@ -650,6 +650,20 @@ svg { width: 100%; height: 100%; }
   background: rgba(15, 23, 42, 0.7);
   flex-shrink: 0;
 }
+.hardware-cart-image-fallback {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.7);
+  color: #fca5a5;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
 .hardware-quantity-btn,
 .hardware-remove-btn {
   display: inline-grid;
@@ -667,8 +681,8 @@ svg { width: 100%; height: 100%; }
 }
 .hardware-cart-quantity { min-width: 24px; color: #e2e8f0; text-align: center; font-variant-numeric: tabular-nums; }
 .hardware-remove-btn { margin-left: auto; color: #fca5a5; font-size: 1.25rem; }
-.hardware-subtotal-row { display: flex; justify-content: space-between; gap: 8px; color: #cbd5e1; font-size: .86rem; }
-.hardware-subtotal-row strong { color: #86efac; font-variant-numeric: tabular-nums; }
+.hardware-subtotal-row { display: flex; justify-content: space-between; gap: 8px; color: #cbd5e1; font-size: 1rem; }
+.hardware-subtotal-row strong { color: #86efac; font-size: 1.1rem; font-variant-numeric: tabular-nums; }
 .summary-stat { margin: 2px 0 6px; color: rgba(226, 232, 240, 0.75); }
 .summary-list { list-style: none; padding: 0; margin: 6px 0 0; display: grid; gap: 6px; }
 .summary-list li { color: rgba(226, 232, 240, 0.7); font-size: .9rem; display: flex; align-items: center; gap: 8px; }

@@ -1577,7 +1577,7 @@ function computeBackofficeAccess() {
 function applyBackofficeVisibility() {
   if (manageStockBtn) manageStockBtn.style.display = isBackofficeAllowed ? '' : 'none';
   if (exportPdfBtn) exportPdfBtn.style.display = isBackofficeAllowed ? '' : 'none';
-  if (sheetOverviewSection) sheetOverviewSection.style.display = isBackofficeAllowed ? '' : 'none';
+  if (sheetOverviewSection) sheetOverviewSection.style.display = '';
   if (stackSection) stackSection.style.display = '';
   if (platesEl) platesEl.style.display = '';
   if (rowsSectionEl) rowsSectionEl.style.display = '';
@@ -1814,19 +1814,25 @@ function renderHardwareCart() {
 
     const controls = document.createElement('div');
     controls.className = 'hardware-cart-controls';
-    const image = document.createElement('img');
-    image.className = 'hardware-cart-image';
-    image.alt = `${entry.name}`;
-    image.loading = 'lazy';
+    const image = document.createElement('span');
+    image.className = 'hardware-cart-image-fallback';
+    image.textContent = '×';
+    image.setAttribute('role', 'img');
+    image.setAttribute('aria-label', `${entry.name}: sin imagen disponible`);
     const reference = getHardwareImageReference(entry.name);
     if (reference && window.MaterialImages?.get) {
       window.MaterialImages.get(reference)
         .then((result) => {
-          if (result?.imageUrl) image.src = result.imageUrl;
+          if (!result?.imageUrl || !image.isConnected) return;
+          const thumbnail = new Image();
+          thumbnail.className = 'hardware-cart-image';
+          thumbnail.alt = entry.name;
+          thumbnail.onload = () => {
+            if (image.isConnected) image.replaceWith(thumbnail);
+          };
+          thumbnail.src = result.imageUrl;
         })
-        .catch(() => {
-          image.removeAttribute('src');
-        });
+        .catch(() => {});
     }
     const decrement = document.createElement('button');
     decrement.type = 'button';
