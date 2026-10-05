@@ -379,6 +379,7 @@ let kerfFieldWrapper = kerfInput ? kerfInput.closest('.kerf-field') : null;
 let pendingKerfValue = kerfInput && kerfInput.value ? kerfInput.value : '5';
 const summaryTotalEl = document.getElementById('summaryTotal');
 const summaryPlatesValueEl = document.getElementById('summaryPlatesValue');
+const summaryHardwareValueEl = document.getElementById('summaryHardwareValue');
 const summaryGrandTotalEl = document.getElementById('summaryGrandTotal');
 const hardwareSelectEl = document.getElementById('hardwareSelect');
 const hardwareSelectionPreviewEl = document.getElementById('hardwareSelectionPreview');
@@ -1419,6 +1420,7 @@ function resetSummaryUI() {
   if (summaryTotalEl) summaryTotalEl.textContent = '';
   if (summaryListEl) summaryListEl.innerHTML = '';
   if (summaryPlatesValueEl) summaryPlatesValueEl.innerHTML = '';
+  if (summaryHardwareValueEl) summaryHardwareValueEl.innerHTML = '';
   if (summaryGrandTotalEl) summaryGrandTotalEl.innerHTML = '';
   lastPlateCostSummary = { unit: 0, total: 0, count: 0, material: currentMaterialName || '' };
   lastEdgeCostSummary = { totalMeters: 0, totalCost: 0, entries: [] };
@@ -9148,6 +9150,33 @@ function updateCostSummary() {
       summaryPlatesValueEl.style.display = '';
     } else {
       summaryPlatesValueEl.style.display = 'none';
+    }
+  }
+
+  if (summaryHardwareValueEl) {
+    const hardwareEntries = lastHardwareCostSummary.entries || [];
+    summaryHardwareValueEl.replaceChildren();
+    if (hardwareEntries.length) {
+      const heading = document.createElement('div');
+      heading.style.cssText = 'font-weight:600;margin-bottom:4px;color:#cbd5e1;';
+      heading.textContent = '💰 Costo de Herrajes';
+
+      const details = document.createElement('div');
+      details.style.cssText = 'font-size:0.9em;color:#94a3b8;';
+      hardwareEntries.forEach((entry) => {
+        const line = document.createElement('div');
+        line.textContent = `• ${entry.name}: ${entry.quantity} × $${fmt(entry.unitPrice, 2)} = $${fmt(entry.total, 2)}`;
+        details.appendChild(line);
+      });
+
+      const total = document.createElement('div');
+      total.style.cssText = 'margin-top:4px;font-weight:600;color:#10b981;';
+      total.textContent = `Total herrajes: $${fmt(hardwareCost, 2)}`;
+      details.appendChild(total);
+      summaryHardwareValueEl.append(heading, details);
+      summaryHardwareValueEl.style.display = '';
+    } else {
+      summaryHardwareValueEl.style.display = 'none';
     }
   }
   
