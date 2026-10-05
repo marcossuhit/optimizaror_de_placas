@@ -18,6 +18,9 @@ const importInput = document.getElementById('importStockInput');
 const clearBtn = document.getElementById('clearStockBtn');
 const deleteMaterialBtn = document.getElementById('deleteMaterialBtn');
 const closeWindowBtn = document.getElementById('closeWindowBtn');
+const stockSearchInput = document.getElementById('stockSearchInput');
+const edgeSearchInput = document.getElementById('edgeSearchInput');
+const hardwareSearchInput = document.getElementById('hardwareSearchInput');
 
 const adminPanel = document.getElementById('adminPanel');
 const adminForm = document.getElementById('adminForm');
@@ -621,18 +624,22 @@ function applyAdminItems(items, { hydrateLocal = isAdmin } = {}) {
 
 function renderStock() {
   tableBody.innerHTML = '';
-  if (!stockItems.length) {
+  const query = stockSearchInput?.value.trim().toLocaleLowerCase() || '';
+  const visibleItems = stockItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => String(item.material || '').toLocaleLowerCase().includes(query));
+  if (!visibleItems.length) {
     const emptyRow = document.createElement('tr');
     const cell = document.createElement('td');
     cell.colSpan = 3;
-    cell.textContent = 'Sin registros de stock';
+    cell.textContent = stockItems.length ? 'No se encontraron materiales' : 'Sin registros de stock';
     cell.className = 'stock-empty';
     emptyRow.appendChild(cell);
     tableBody.appendChild(emptyRow);
     return;
   }
 
-  stockItems.forEach((item, index) => {
+  visibleItems.forEach(({ item, index }) => {
     const row = document.createElement('tr');
     const isProtected = isProtectedItem(item.material, 'material');
 
@@ -689,18 +696,22 @@ function renderStock() {
 function renderEdges() {
   if (!edgeTableBody) return;
   edgeTableBody.innerHTML = '';
-  if (!edgeItems.length) {
+  const query = edgeSearchInput?.value.trim().toLocaleLowerCase() || '';
+  const visibleItems = edgeItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => String(item.name || '').toLocaleLowerCase().includes(query));
+  if (!visibleItems.length) {
     const emptyRow = document.createElement('tr');
     const cell = document.createElement('td');
     cell.colSpan = 3;
-    cell.textContent = 'Sin cubre cantos registrados';
+    cell.textContent = edgeItems.length ? 'No se encontraron cubre cantos' : 'Sin cubre cantos registrados';
     cell.className = 'stock-empty';
     emptyRow.appendChild(cell);
     edgeTableBody.appendChild(emptyRow);
     return;
   }
 
-  edgeItems.forEach((item, index) => {
+  visibleItems.forEach(({ item, index }) => {
     const row = document.createElement('tr');
     const isProtected = isProtectedItem(item.name, 'edge');
 
@@ -755,18 +766,22 @@ function renderEdges() {
 function renderHardware() {
   if (!hardwareTableBody) return;
   hardwareTableBody.innerHTML = '';
-  if (!hardwareItems.length) {
+  const query = hardwareSearchInput?.value.trim().toLocaleLowerCase() || '';
+  const visibleItems = hardwareItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => String(item.name || '').toLocaleLowerCase().includes(query));
+  if (!visibleItems.length) {
     const emptyRow = document.createElement('tr');
     const cell = document.createElement('td');
     cell.colSpan = 3;
-    cell.textContent = 'Sin herrajes registrados';
+    cell.textContent = hardwareItems.length ? 'No se encontraron herrajes' : 'Sin herrajes registrados';
     cell.className = 'stock-empty';
     emptyRow.appendChild(cell);
     hardwareTableBody.appendChild(emptyRow);
     return;
   }
 
-  hardwareItems.forEach((item) => {
+  visibleItems.forEach(({ item }) => {
     const row = document.createElement('tr');
     const nameTd = document.createElement('td');
     const nameBtn = document.createElement('button');
@@ -1647,6 +1662,10 @@ if (hardwareDeleteBtn) {
     hardwareNameInput?.focus();
   });
 }
+
+stockSearchInput?.addEventListener('input', renderStock);
+edgeSearchInput?.addEventListener('input', renderEdges);
+hardwareSearchInput?.addEventListener('input', renderHardware);
 
 bootstrap();
 

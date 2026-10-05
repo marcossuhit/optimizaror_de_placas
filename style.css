@@ -884,6 +884,23 @@ body.theme-light .social-links a:hover {
   align-content: start;
 }
 
+.stock-search-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 6px;
+  background: #0e1629;
+  color: var(--text);
+  font: inherit;
+}
+
+.stock-search-input:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
 .stock-table-scroll {
   max-height: min(52vh, 480px);
   overflow: auto;

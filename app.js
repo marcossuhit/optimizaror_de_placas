@@ -1777,12 +1777,7 @@ function renderHardwareCart() {
         quantity: Math.max(1, Math.floor(Number(entry.quantity) || 1))
       };
     })
-    .filter((entry) => entry.name)
-    .sort((a, b) => {
-      const aIndex = hardwareCart.findIndex((item) => item.name.toLocaleLowerCase() === a.name.toLocaleLowerCase());
-      const bIndex = hardwareCart.findIndex((item) => item.name.toLocaleLowerCase() === b.name.toLocaleLowerCase());
-      return bIndex - aIndex;
-    });
+    .filter((entry) => entry.name);
 
   if (hardwareCartEl) hardwareCartEl.replaceChildren();
   const entries = hardwareCart.map((entry) => ({
@@ -1876,9 +1871,8 @@ function addSelectedHardware() {
   const existing = hardwareCart.find((entry) => entry.name.toLocaleLowerCase() === name.toLocaleLowerCase());
   if (existing) {
     existing.quantity += 1;
-    hardwareCart = [existing, ...hardwareCart.filter((entry) => entry !== existing)];
   } else {
-    hardwareCart = [{ name: item.name, unitPrice: item.unitPrice, quantity: 1 }, ...hardwareCart];
+    hardwareCart.push({ name: item.name, unitPrice: item.unitPrice, quantity: 1 });
   }
   if (hardwareSelectEl) {
     hardwareSelectEl.value = '';
@@ -7489,6 +7483,22 @@ if (manageStockBtn) {
 if (projectNameEl) projectNameEl.addEventListener('input', () => { persistState(); });
 
 // -------- Exportar PNG/PDF --------
+function getHardwareDetailLines({ includePrices = false } = {}) {
+  const entries = lastHardwareCostSummary.entries || [];
+  if (!entries.length) return [];
+
+  const lines = ['Herrajes:'];
+  entries.forEach((entry) => {
+    if (includePrices) {
+      lines.push(`- ${entry.name}: ${entry.quantity} × $${formatNumber(entry.unitPrice, 2)} c/u = $${formatNumber(entry.total, 2)}`);
+    } else {
+      lines.push(`- ${entry.name}: ${entry.quantity} unidad(es)`);
+    }
+  });
+  if (includePrices) lines.push(`Subtotal herrajes: $${formatNumber(lastHardwareCostSummary.total, 2)}`);
+  return lines;
+}
+
 async function buildExportCanvasForPdf() {
   // Primero asegurar que tenemos una solución
   try {
@@ -7716,6 +7726,8 @@ async function buildExportCanvasForPdf() {
       });
     }
   }
+
+  getHardwareDetailLines().forEach(addSummary);
 
   const rowSummaries = [];
 
@@ -8015,6 +8027,13 @@ async function buildMultiPagePdf(scaledImages, svgs) {
     } else {
       addCuts('No se encontraron cortes en esta placa.');
     }
+
+    const hardwareLines = getHardwareDetailLines();
+    if (hardwareLines.length) {
+      addCuts('');
+      addCuts('DETALLE DE HERRAJES:');
+      hardwareLines.slice(1).forEach(addCuts);
+    }
     
     // Configurar dimensiones para esta página con múltiples columnas para cortes
     const summaryLineHeight = 20;
@@ -8152,7 +8171,8 @@ async function exportPNG() {
     img.src = svg64;
   })));
   const scaled = images.map(({ img, w, h }) => ({ img, w: targetW, h: Math.round(h * (targetW / w)) }));
-  const headerH = 120;
+  const hardwareLines = getHardwareDetailLines();
+  const headerH = Math.max(120, 110 + hardwareLines.length * 16);
   const totalH = headerH + margin + scaled.reduce((acc, s) => acc + s.h + margin, 0);
   const canvas = document.createElement('canvas');
   canvas.width = targetW + margin * 2;
@@ -8182,6 +8202,10 @@ async function exportPNG() {
   rightStats.forEach((text, idx) => {
     ctx.fillText(text, targetW - 360, 64 + idx * 12);
   });
+  if (hardwareLines.length) {
+    ctx.font = '12px system-ui';
+    hardwareLines.forEach((line, idx) => ctx.fillText(line, margin, 108 + idx * 16));
+  }
   // Placas
   let y = headerH;
   scaled.forEach(({ img, w, h }, idx) => {
@@ -8452,13 +8476,8 @@ function buildSummaryReportAdmin() {
     });
   }
 
-  if (lastHardwareCostSummary.entries.length) {
-    lines.push('');
-    lines.push('Herrajes:');
-    lastHardwareCostSummary.entries.forEach((entry) => {
-      pushLine(`- ${entry.name}: ${entry.quantity} × $${fmt(entry.unitPrice, 2)} = $${fmt(entry.total, 2)}`);
-    });
-  }
+  const hardwareLines = getHardwareDetailLines({ includePrices: true });
+  if (hardwareLines.length) lines.push('', ...hardwareLines);
 
   // COSTO TOTAL GENERAL (placas + cubre canto + herrajes)
   const totalPlates = lastPlateCostSummary.total || 0;
@@ -8535,13 +8554,8 @@ function buildSummaryReportClient() {
     });
   }
 
-  if (lastHardwareCostSummary.entries.length) {
-    lines.push('');
-    lines.push('Herrajes:');
-    lastHardwareCostSummary.entries.forEach((entry) => {
-      pushLine(`- ${entry.name}: ${entry.quantity} unidad(es)`);
-    });
-  }
+  const hardwareLines = getHardwareDetailLines();
+  if (hardwareLines.length) lines.push('', ...hardwareLines);
 
   return buildSummaryReportCommon(lines, pushLine, fmt);
 }
@@ -8714,8 +8728,8 @@ async function handleSendCuts() {
   try {
     const result = await buildExportCanvasForPdf();
     if (!result) return;
-    const { canvas, projectName: rawName, title } = result;
-    const pdfBlob = canvasToPdfBlob(canvas);
+    const exportPages = Array.isArray(result) ? result : [result];
+    const { projectName: rawName, title } = exportPages[0];
     const baseName = (rawName || 'cortes').trim() || 'cortes';
     const slug = baseName
       .normalize('NFD')
@@ -8723,13 +8737,22 @@ async function handleSendCuts() {
       .replace(/[^a-zA-Z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '')
       .toLowerCase() || 'cortes';
-    const filename = `cortes-${slug}.pdf`;
+    const pdfAttachments = exportPages.map((page, index) => ({
+      blob: canvasToPdfBlob(page.canvas),
+      filename: exportPages.length > 1
+        ? `cortes-${slug}-placa-${index + 1}.pdf`
+        : `cortes-${slug}.pdf`,
+      mimeType: 'application/pdf'
+    }));
+    const pdfDescription = exportPages.length > 1
+      ? `${exportPages.length} archivos PDF, uno por placa`
+      : `el archivo ${pdfAttachments[0].filename}`;
     const jsonState = serializeState();
     const jsonBlob = new Blob([JSON.stringify(jsonState, null, 2)], { type: 'application/json' });
     const jsonFilename = `${slug || 'cortes'}-proyecto.json`;
     // NO descargar localmente, solo adjuntar a emails
     const subjectName = rawName || title || 'Plano de cortes';
-    const adminBodyText = `Se adjunta el plano de cortes "${subjectName}" generado desde la aplicación.`;
+    const adminBodyText = `Se adjunta ${pdfDescription} del plano de cortes "${subjectName}" generado desde la aplicación.`;
     const clientBodyText = `Se adjunta la configuración de cortes "${subjectName}" generado desde la aplicación. Para su futuro uso.`;
     const recipientsSent = [];
     const sendErrors = [];
@@ -8741,8 +8764,8 @@ async function handleSendCuts() {
       const attachments = [];
       
       // Adjuntar PDF si se solicita
-      if (attachPdf && pdfBlob) {
-        attachments.push({ blob: pdfBlob, filename, mimeType: 'application/pdf' });
+      if (attachPdf) {
+        attachments.push(...pdfAttachments);
       }
       
       // Adjuntar JSON si se solicita
@@ -8798,7 +8821,7 @@ async function handleSendCuts() {
     } else {
       showAppDialog({
         title: 'Correo enviado',
-        message: `Se envió ${filename} a la cuenta administradora.\n${downloadNotice}`,
+        message: `Se enviaron ${pdfDescription} a la cuenta administradora.\n${downloadNotice}`,
         tone: 'success'
       });
     }
