@@ -1591,6 +1591,8 @@ function refreshBackofficeAccess() {
   const previous = isBackofficeAllowed;
   isBackofficeAllowed = computeBackofficeAccess();
   applyBackofficeVisibility();
+  const cncBtn = document.querySelector('#cncExportBtn');
+  if (cncBtn) cncBtn.style.display = isBackofficeAllowed ? '' : 'none';
   if (previous !== isBackofficeAllowed && typeof updateMaterialDropdownState === 'function') {
     updateMaterialDropdownState();
   }
@@ -7733,8 +7735,8 @@ async function buildExportCanvasForPdf() {
 
   const rowSummaries = [];
 
-  const summaryLineHeight = 20;
-  const headingHeight = 20;
+  const summaryLineHeight = 23;
+  const headingHeight = 22;
   const columnGap = 40;
   const contentGap = 6;
   const summaryStartY = margin + 44;
@@ -7761,17 +7763,17 @@ async function buildExportCanvasForPdf() {
   const headingYOffset = summaryStartY;
   const bodyStartY = headingYOffset + headingHeight + contentGap;
 
-  ctx.font = 'bold 16px system-ui';
+  ctx.font = 'bold 18px system-ui';
   ctx.fillText('Detalle de Placas', leftX, headingYOffset);
 
-  ctx.font = '14px system-ui';
+  ctx.font = '16px system-ui';
   summaryTexts.forEach((line, idx) => {
     ctx.fillText(line, leftX, bodyStartY + idx * summaryLineHeight);
   });
   let y = headerH;
   scaled.forEach(({ img, w, h }, idx) => {
     ctx.fillStyle = '#111827';
-    ctx.font = '14px system-ui';
+    ctx.font = '16px system-ui';
     ctx.fillText(`Placa ${idx + 1}`, margin, y - 6);
     ctx.drawImage(img, margin, y, w, h);
     y += h + margin;
@@ -8038,9 +8040,9 @@ async function buildMultiPagePdf(scaledImages, svgs) {
     }
     
     // Configurar dimensiones para esta página con múltiples columnas para cortes
-    const summaryLineHeight = 20;
-    const cutsLineHeight = 16; // Menor altura para las líneas de cortes
-    const headingHeight = 20;
+    const summaryLineHeight = 23;
+    const cutsLineHeight = 18;
+    const headingHeight = 22;
     const contentGap = 6;
     const summaryStartY = margin + 44;
     const bodyStartY = summaryStartY + headingHeight + contentGap;
@@ -8111,10 +8113,10 @@ async function buildMultiPagePdf(scaledImages, svgs) {
     const leftX = margin;
     
     // Columna izquierda: Detalle de la placa
-    ctx.font = 'bold 16px system-ui';
+    ctx.font = 'bold 18px system-ui';
     ctx.fillText('Detalle de Placa', leftX, summaryStartY);
     
-    ctx.font = '14px system-ui';
+    ctx.font = '16px system-ui';
     summaryTexts.forEach((line, idx) => {
       ctx.fillText(line, leftX, bodyStartY + idx * summaryLineHeight);
     });
@@ -8124,7 +8126,7 @@ async function buildMultiPagePdf(scaledImages, svgs) {
       const columnX = leftX + plateColumnWidth + 20 + (columnIndex * (cutsColumnWidth + 15));
       
       // Título de la columna de cortes
-      ctx.font = 'bold 12px system-ui';
+      ctx.font = 'bold 14px system-ui';
       if (columnIndex === 0) {
         ctx.fillText('Detalle de Cortes', columnX, summaryStartY);
       } else {
@@ -8132,7 +8134,7 @@ async function buildMultiPagePdf(scaledImages, svgs) {
       }
       
       // Contenido de la columna
-      ctx.font = '11px system-ui';
+      ctx.font = '13px system-ui';
       let lineIndex = 0;
       
       columnTexts.forEach((line, idx) => {
@@ -11359,6 +11361,7 @@ function addCNCExportButton() {
   cncBtn.className = 'btn';
   cncBtn.innerHTML = '🔧 Generar CNC';
   cncBtn.title = 'Generar archivos CNC (.001, .002, etc.) para máquina de corte';
+  cncBtn.style.display = isBackofficeAllowed ? '' : 'none';
   cncBtn.onclick = generateCNCFiles;
   exportSection.appendChild(cncBtn);
   
@@ -11386,6 +11389,8 @@ function updateCNCButtonState() {
   if (!cncBtn && !testBtn) {
     return;
   }
+
+  if (cncBtn) cncBtn.style.display = isBackofficeAllowed ? '' : 'none';
 
   const testAllowed = isCNCAllowedUser();
   if (testBtn) {
