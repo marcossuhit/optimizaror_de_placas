@@ -3868,61 +3868,6 @@ function makeRow(index) {
     syncEdgesFromTierInputs({ emitChange: true });
   };
 
-  const swapEdgebandAssignments = () => {
-    const widthTierValue = iWLevel.value;
-    iWLevel.value = iHLevel.value;
-    iHLevel.value = widthTierValue;
-
-    const captureState = (select) => {
-      const activeOption = select?.selectedOptions?.[0] || null;
-      return {
-        value: select ? select.value || '' : '',
-        label: select?.dataset?.label ? select.dataset.label.trim() : '',
-        text: activeOption ? (activeOption.textContent || '').trim() : ''
-      };
-    };
-
-    const applyState = (select, state) => {
-      if (!select) return;
-      const nextValue = state.value || '';
-      const labelText = state.label || state.text || nextValue;
-      if (nextValue) {
-        const options = Array.from(select.options || []);
-        let option = options.find((opt) => opt.value === nextValue);
-        if (!option) {
-          option = document.createElement('option');
-          option.value = nextValue;
-          option.textContent = labelText || `${nextValue} (no listado)`;
-          option.dataset.missing = '1';
-          select.appendChild(option);
-        }
-        select.value = nextValue;
-      } else {
-        select.value = '';
-      }
-
-      if (labelText) {
-        select.dataset.label = labelText;
-      } else {
-        delete select.dataset.label;
-      }
-
-      if (nextValue) {
-        select.dataset.value = nextValue;
-      } else {
-        delete select.dataset.value;
-      }
-    };
-
-    const widthState = captureState(wEdgeSelect);
-    const heightState = captureState(hEdgeSelect);
-
-    applyState(wEdgeSelect, heightState);
-    applyState(hEdgeSelect, widthState);
-
-    handleEdgeSelectChange();
-  };
-
   tierInputs.forEach((input) => {
     input.addEventListener('input', () => handleTierInputChange(input));
   });
@@ -4197,6 +4142,7 @@ function makeRow(index) {
   const handleEdgeToggle = (edge) => {
     const newSelected = edge.dataset.selected !== '1';
     setEdgeSelected(edge, newSelected);
+    updatePreview();
     scheduleLayoutRecalc({ priority: 'normal' });
     persistState && persistState();
   };
@@ -4358,43 +4304,33 @@ function makeRow(index) {
     // Inset dinámico para no colapsar los lados en piezas muy chicas
     const inset = Math.max(1, Math.min(EDGE_INSET, rw * 0.5 - 2, rh * 0.5 - 2));
 
-    edges.top.setAttribute('x1', String(rx + inset));
-    edges.top.setAttribute('y1', String(ry + inset));
-    edges.top.setAttribute('x2', String(rx + rw - inset));
-    edges.top.setAttribute('y2', String(ry + inset));
+    const displaySideByOriginalSide = rot
+      ? { top: 'left', right: 'top', bottom: 'right', left: 'bottom' }
+      : { top: 'top', right: 'right', bottom: 'bottom', left: 'left' };
+    const sideCoordinates = {
+      top: [rx + inset, ry + inset, rx + rw - inset, ry + inset],
+      right: [rx + rw - inset, ry + inset, rx + rw - inset, ry + rh - inset],
+      bottom: [rx + inset, ry + rh - inset, rx + rw - inset, ry + rh - inset],
+      left: [rx + inset, ry + inset, rx + inset, ry + rh - inset]
+    };
+    const hitSideCoordinates = {
+      top: [rx, ry, rx + rw, ry],
+      right: [rx + rw, ry, rx + rw, ry + rh],
+      bottom: [rx, ry + rh, rx + rw, ry + rh],
+      left: [rx, ry, rx, ry + rh]
+    };
+    const setLineCoordinates = (line, coordinates) => {
+      const [x1, y1, x2, y2] = coordinates;
+      line.setAttribute('x1', String(x1));
+      line.setAttribute('y1', String(y1));
+      line.setAttribute('x2', String(x2));
+      line.setAttribute('y2', String(y2));
+    };
 
-    edges.right.setAttribute('x1', String(rx + rw - inset));
-    edges.right.setAttribute('y1', String(ry + inset));
-    edges.right.setAttribute('x2', String(rx + rw - inset));
-    edges.right.setAttribute('y2', String(ry + rh - inset));
-
-    edges.bottom.setAttribute('x1', String(rx + inset));
-    edges.bottom.setAttribute('y1', String(ry + rh - inset));
-    edges.bottom.setAttribute('x2', String(rx + rw - inset));
-    edges.bottom.setAttribute('y2', String(ry + rh - inset));
-
-    edges.left.setAttribute('x1', String(rx + inset));
-    edges.left.setAttribute('y1', String(ry + inset));
-    edges.left.setAttribute('x2', String(rx + inset));
-    edges.left.setAttribute('y2', String(ry + rh - inset));
-
-    // Posicionar las líneas de hit (ocupando todo el lado)
-    edgesHit.top.setAttribute('x1', String(rx));
-    edgesHit.top.setAttribute('y1', String(ry));
-    edgesHit.top.setAttribute('x2', String(rx + rw));
-    edgesHit.top.setAttribute('y2', String(ry));
-    edgesHit.right.setAttribute('x1', String(rx + rw));
-    edgesHit.right.setAttribute('y1', String(ry));
-    edgesHit.right.setAttribute('x2', String(rx + rw));
-    edgesHit.right.setAttribute('y2', String(ry + rh));
-    edgesHit.bottom.setAttribute('x1', String(rx));
-    edgesHit.bottom.setAttribute('y1', String(ry + rh));
-    edgesHit.bottom.setAttribute('x2', String(rx + rw));
-    edgesHit.bottom.setAttribute('y2', String(ry + rh));
-    edgesHit.left.setAttribute('x1', String(rx));
-    edgesHit.left.setAttribute('y1', String(ry));
-    edgesHit.left.setAttribute('x2', String(rx));
-    edgesHit.left.setAttribute('y2', String(ry + rh));
+    Object.entries(displaySideByOriginalSide).forEach(([originalSide, displaySide]) => {
+      setLineCoordinates(edges[originalSide], sideCoordinates[displaySide]);
+      setLineCoordinates(edgesHit[originalSide], hitSideCoordinates[displaySide]);
+    });
   }
 
   iW.addEventListener('input', () => { 
@@ -4414,11 +4350,7 @@ function makeRow(index) {
     maybeAutoAppendRow(); 
   });
   iRot.addEventListener('change', () => {
-    const nextChecked = !!iRot.checked;
-    if (nextChecked !== row._manualRotWanted) {
-      swapEdgebandAssignments();
-    }
-    row._manualRotWanted = nextChecked;
+    row._manualRotWanted = !!iRot.checked;
     updatePreview();
     scheduleLayoutRecalc({ priority: 'normal' });
     persistState && persistState();
@@ -6416,6 +6348,7 @@ function gatherPiecesFromRows() {
     id: p.id,
     width: p.rawW,
     height: p.rawH,
+    rotated: p.rot,
     color: p.color,
     label: `${p.rawW}×${p.rawH}`,
     quantity: 1,
@@ -9044,13 +8977,10 @@ function recalcEdgebanding() {
             heightTierVal
           };
         })();
-    const rot = row._getRotation ? row._getRotation() : false;
-    const effW = rot ? h : w;
-    const effH = rot ? w : h;
     const widthTierVal = Number.isFinite(counts?.widthTierVal) ? counts.widthTierVal : 0;
     const heightTierVal = Number.isFinite(counts?.heightTierVal) ? counts.heightTierVal : 0;
-    const horizontalMm = widthTierVal * effW * qty;
-    const verticalMm = heightTierVal * effH * qty;
+    const horizontalMm = widthTierVal * w * qty;
+    const verticalMm = heightTierVal * h * qty;
     const subtotal = horizontalMm + verticalMm;
     if (subtotal > 0) {
       items.push({ idx: idx + 1, subtotal, color: getRowColor(idx) });
