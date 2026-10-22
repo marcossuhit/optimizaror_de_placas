@@ -417,11 +417,21 @@ const WHATSAPP_MESSAGE = 'Fernando te envio la planificacion de cortes.';
 const sendCutsDefaultLabel = sendCutsBtn?.textContent || 'Enviar cortes';
 const StockSync = window.StockSync || null;
 const REMOTE_STOCK_SYNC_ENABLED = !!(StockSync && typeof StockSync.isConfigured === 'function' && StockSync.isConfigured());
-const DEFAULT_PLATE_WIDTH_ADMIN = 2750;
-const DEFAULT_PLATE_HEIGHT_ADMIN = 1830;
+const DEFAULT_PLATE_WIDTH_ADMIN = 2740;
+const DEFAULT_PLATE_HEIGHT_ADMIN = 1820;
 const DEFAULT_PLATE_WIDTH_USER = 2740;
 const DEFAULT_PLATE_HEIGHT_USER = 1820;
+const LEGACY_ADMIN_PLATE_WIDTH = 2750;
+const LEGACY_ADMIN_PLATE_HEIGHT = 1830;
 const REUSE_EPS = 1e-4;
+
+function isStandardPlateDimensions(width, height) {
+  const matches = (targetWidth, targetHeight) =>
+    Math.abs(Number(width) - targetWidth) <= 0.1 &&
+    Math.abs(Number(height) - targetHeight) <= 0.1;
+  return matches(DEFAULT_PLATE_WIDTH_USER, DEFAULT_PLATE_HEIGHT_USER) ||
+    matches(LEGACY_ADMIN_PLATE_WIDTH, LEGACY_ADMIN_PLATE_HEIGHT);
+}
 
 function getSelectedLayoutStrategy() {
   const el = document.getElementById('layoutStrategy');
@@ -1971,29 +1981,80 @@ function initRemoteSynchronisation() {
   }
 }
 
-function updateRowSummaryUI() {
+function updatePlateSummaryUI(solution = lastSuccessfulSolution) {
   if (!summaryListEl) return;
   summaryListEl.innerHTML = '';
-  const hasPlacementData = Array.from(lastPlacementByRow.values()).some((entry) => {
-    if (!entry) return false;
-    return (entry.requested ?? 0) > 0 || (entry.placed ?? 0) > 0 || (entry.left ?? 0) > 0;
+
+  const instances = Array.isArray(solution?.instances) ? solution.instances : [];
+  const placementsByPlate = Array.isArray(solution?.placementsByPlate) ? solution.placementsByPlate : [];
+  if (!instances.length || !placementsByPlate.length) return;
+
+  const fmt = (value, decimals = 2) => formatNumber(Number(value) || 0, decimals);
+  const groupByCoordinate = (placements, coordinate) => {
+    const groups = [];
+    for (const placement of placements) {
+      const value = Number(placement?.[coordinate]);
+      if (!Number.isFinite(value)) continue;
+      let group = groups.find((item) => Math.abs(item.coordinate - value) <= 0.5);
+      if (!group) {
+        group = { coordinate: value, placements: [] };
+        groups.push(group);
+      }
+      group.placements.push(placement);
+    }
+    return groups;
+  };
+
+  instances.forEach((instance, plateIdx) => {
+    const placements = Array.isArray(placementsByPlate[plateIdx]) ? placementsByPlate[plateIdx] : [];
+    if (!placements.length) return;
+
+    const plateWidth = Number(instance.sw ?? instance.width) || 0;
+    const plateHeight = Number(instance.sh ?? instance.height) || 0;
+    const totalAreaMm2 = plateWidth * plateHeight;
+    const usedAreaMm2 = placements.reduce((sum, placement) => {
+      const width = Number(placement.w ?? placement.width) || 0;
+      const height = Number(placement.h ?? placement.height) || 0;
+      return sum + width * height;
+    }, 0);
+    const utilization = totalAreaMm2 > 0 ? Math.min(100, (usedAreaMm2 / totalAreaMm2) * 100) : 0;
+    const wasteAreaM2 = Math.max(0, (totalAreaMm2 - usedAreaMm2) / 1_000_000);
+
+    const layoutStrategy = String(instance.layoutStrategy || getSelectedLayoutStrategy()).toLowerCase();
+    const isHorizontalLayout = layoutStrategy === 'horizontal' || layoutStrategy === 'band';
+    const primaryCoordinate = isHorizontalLayout ? 'y' : 'x';
+    const secondaryCoordinate = isHorizontalLayout ? 'x' : 'y';
+    const primaryGroups = groupByCoordinate(placements, primaryCoordinate);
+    const secondaryCutCount = primaryGroups.reduce((sum, group) => {
+      const secondaryGroups = groupByCoordinate(group.placements, secondaryCoordinate);
+      return sum + Math.max(0, secondaryGroups.length - 1);
+    }, 0);
+    const primaryCutCount = Math.max(0, primaryGroups.length * 2 - 1);
+    const verticalCuts = isHorizontalLayout ? secondaryCutCount : primaryCutCount;
+    const horizontalCuts = isHorizontalLayout ? primaryCutCount : secondaryCutCount;
+
+    const plateDiv = document.createElement('li');
+    plateDiv.style.cssText = 'display:block;background:#0e1629;padding:12px;margin-bottom:10px;border-radius:6px;border:1px solid #1e293b;';
+    plateDiv.innerHTML = `
+      <div style="font-weight:bold;margin-bottom:8px;color:#fbbf24;font-size:1.05em;">📋 Placa ${plateIdx + 1} de ${instances.length}</div>
+      <div style="font-size:0.9em;color:#94a3b8;line-height:1.6;">
+        <div style="margin-bottom:4px;">📐 <span style="color:#cbd5e1;">Dimensiones:</span> ${fmt(plateWidth, 0)} × ${fmt(plateHeight, 0)} mm (${fmt(totalAreaMm2 / 1_000_000, 2)} m²)</div>
+        <div style="margin-bottom:4px;">📦 <span style="color:#cbd5e1;">Piezas colocadas:</span> ${placements.length}</div>
+        <div style="margin-bottom:4px;">📊 <span style="color:#cbd5e1;">Utilización:</span> <span style="color:#10b981;font-weight:600;">${fmt(utilization)}%</span></div>
+        <div style="margin-bottom:4px;">♻️ <span style="color:#cbd5e1;">Desperdicio:</span> <span style="color:#ef4444;font-weight:600;">${fmt(100 - utilization)}%</span> <span style="color:#64748b;">(${fmt(wasteAreaM2, 3)} m²)</span></div>
+        <div style="margin-bottom:4px;">✅ <span style="color:#cbd5e1;">Área utilizada:</span> ${fmt(usedAreaMm2 / 1_000_000, 3)} m²</div>
+        <div>⚙️ <span style="color:#cbd5e1;">Cortes totales:</span> ${verticalCuts + horizontalCuts} <span style="color:#64748b;">(${verticalCuts} vert. + ${horizontalCuts} horiz.)</span></div>
+      </div>
+    `;
+    summaryListEl.appendChild(plateDiv);
   });
-  if (!hasPlacementData && lastEdgebandByRow.size === 0) return;
-  const rows = getRows();
-  for (let i = 0; i < rows.length && i < 50; i++) {
-    const color = getRowColor(i);
-    const place = lastPlacementByRow.get(i) || { requested: 0, placed: 0, left: 0 };
-    const cc = lastEdgebandByRow.get(i) || 0;
-    const li = document.createElement('li');
-    const dot = document.createElement('span');
-    dot.className = 'legend-dot';
-    dot.style.background = color;
-    const text = document.createElement('span');
-    const fmt = (n) => formatNumber(Number(n) || 0, 2);
-    text.textContent = `Fila ${i + 1}: ${place.placed} de ${place.requested} (fuera ${place.left}) — cubre canto: ${fmt(cc)} mm`;
-    li.appendChild(dot);
-    li.appendChild(text);
-    summaryListEl.appendChild(li);
+
+  const leftoverCount = Array.isArray(solution.leftoverPieces) ? solution.leftoverPieces.length : 0;
+  if (leftoverCount > 0) {
+    const remainingDiv = document.createElement('li');
+    remainingDiv.style.cssText = 'display:block;background:#7f1d1d;padding:12px;margin-top:10px;border-radius:6px;border:1px solid #991b1b;color:#fecaca;';
+    remainingDiv.textContent = `⚠️ Piezas sin colocar: ${leftoverCount}`;
+    summaryListEl.appendChild(remainingDiv);
   }
 }
 
@@ -2422,15 +2483,15 @@ refreshEdgeCatalog({ updateRows: false });
 function updateMaterialDropdownState() {
   if (!addPlateBtn || !plateMaterialSelect) return;
   const hasSelection = !!plateMaterialSelect.value;
-  const plateCount = platesEl ? platesEl.querySelectorAll('.plate-row').length : 0;
-  const limitReached = isBackofficeAllowed ? plateCount >= 1 : false;
+  const hasSpecialPlate = !!platesEl?.querySelector('.plate-row[data-plate-type="special"]');
+  const limitReached = hasSpecialPlate;
   const shouldDisable = !hasSelection || limitReached;
   addPlateBtn.disabled = shouldDisable;
   addPlateBtn.classList.toggle('disabled-btn', shouldDisable);
   if (!hasSelection) {
     addPlateBtn.title = 'Seleccioná un material para agregar placas';
   } else if (limitReached) {
-    addPlateBtn.title = 'Ya agregaste la placa disponible para este proyecto';
+    addPlateBtn.title = 'Ya agregaste la única placa especial permitida';
   } else {
     addPlateBtn.title = '';
   }
@@ -2483,6 +2544,7 @@ function rebuildMaterialOptions(names, { placeholder = false } = {}) {
     plateMaterialSelect.value = nextSelection;
     currentMaterialName = nextSelection;
     try { localStorage.setItem(LAST_MATERIAL_KEY, currentMaterialName); } catch (_) {}
+    ensureStandardPlateRow();
   } else {
     plateMaterialSelect.value = '';
     currentMaterialName = '';
@@ -2591,6 +2653,7 @@ function formatNumber(value, decimals = 2) {
 
 function parsePlateRow(row) {
   if (!row) return null;
+  const type = row.dataset.plateType === 'special' ? 'special' : 'standard';
   const sw = parseFloat(row.querySelector('input.plate-w')?.value ?? '');
   const sh = parseFloat(row.querySelector('input.plate-h')?.value ?? '');
   const sc = parseInt(row.querySelector('input.plate-c')?.value ?? '', 10);
@@ -2600,11 +2663,12 @@ function parsePlateRow(row) {
   const right = !!sides[1]?.checked;
   const bottom = !!sides[2]?.checked;
   const left = !!sides[3]?.checked;
-  if (!(sw > 0 && sh > 0 && sc >= 1)) return null;
+  if (!(sw > 0 && sh > 0 && sc >= (type === 'special' ? 1 : 0))) return null;
   return {
     sw,
     sh,
     sc,
+    type,
     trim: { mm: tmm, top, right, bottom, left },
     rowEl: row
   };
@@ -2617,11 +2681,20 @@ function getPlateRowsWithRefs() {
     const parsed = parsePlateRow(row);
     if (parsed) rows.push(parsed);
   });
-  return rows;
+  return rows.sort((a, b) => (a.type === 'special' ? -1 : 0) - (b.type === 'special' ? -1 : 0));
 }
 
 function getPlates() {
   return getPlateRowsWithRefs().map(({ rowEl, ...rest }) => rest);
+}
+
+function hasMixedPlateDimensions(plates = getPlates()) {
+  if (!Array.isArray(plates) || plates.length < 2) return false;
+  const first = plates[0];
+  return plates.some((plate) =>
+    Math.abs(Number(plate.sw) - Number(first.sw)) > 0.1 ||
+    Math.abs(Number(plate.sh) - Number(first.sh)) > 0.1
+  );
 }
 
 function getPrimaryPlateDims() {
@@ -3192,15 +3265,6 @@ function collectSolverInputs() {
   const plateRows = getPlateRowsWithRefs();
   if (!plateRows.length) return null;
 
-  const instances = [];
-  const instanceMeta = [];
-  plateRows.forEach((p, plateRowIdx) => {
-    for (let i = 0; i < p.sc; i++) {
-      instances.push({ sw: p.sw, sh: p.sh, trim: p.trim || { mm: 0, top: false, right: false, bottom: false, left: false } });
-      instanceMeta.push({ plateRowIdx });
-    }
-  });
-
   const allowAutoRotate = !!(autoRotateToggle && autoRotateToggle.checked);
   const kerf = getKerfMm();
   const pieces = [];
@@ -3235,6 +3299,26 @@ function collectSolverInputs() {
     totalRequested += qty;
   });
 
+  plateRows.forEach((plate) => {
+    plate.sc = plate.type === 'special' ? 1 : Math.max(1, totalRequested);
+    const countInput = plate.rowEl?.querySelector('input.plate-c');
+    if (countInput) countInput.value = String(plate.sc);
+  });
+
+  const instances = [];
+  const instanceMeta = [];
+  plateRows.forEach((plate, plateRowIdx) => {
+    for (let i = 0; i < plate.sc; i++) {
+      instances.push({
+        sw: plate.sw,
+        sh: plate.sh,
+        plateRow: plateRowIdx,
+        trim: plate.trim || { mm: 0, top: false, right: false, bottom: false, left: false }
+      });
+      instanceMeta.push({ plateRowIdx });
+    }
+  });
+
   const layoutStrategyEl = document.getElementById('layoutStrategy');
   const strategy = layoutStrategyEl && layoutStrategyEl.value === 'horizontal' ? 'horizontal' : 'vertical';
 
@@ -3248,6 +3332,80 @@ function collectSolverInputs() {
     kerf,
     strategy
   };
+}
+
+function compactUnusedSolutionPlates(solution, instances, instanceMeta, plateRows) {
+  if (!solution || !Array.isArray(solution.placementsByPlate)) {
+    return { solution, instances, instanceMeta };
+  }
+
+  const keepIndices = [];
+  solution.placementsByPlate.forEach((placements, idx) => {
+    if (Array.isArray(placements) && placements.length) keepIndices.push(idx);
+  });
+  const specialPlateIndex = instanceMeta.findIndex((meta) => {
+    const rowIdx = meta?.plateRowIdx ?? meta?.plateRow;
+    return plateRows[rowIdx]?.type === 'special';
+  });
+  if (specialPlateIndex >= 0 && !keepIndices.includes(specialPlateIndex)) {
+    keepIndices.unshift(specialPlateIndex);
+  }
+  if (!keepIndices.length && instances.length) {
+    const standardIdx = instanceMeta.findIndex((meta) => {
+      const rowIdx = meta?.plateRowIdx ?? meta?.plateRow;
+      return plateRows[rowIdx]?.type !== 'special';
+    });
+    keepIndices.push(standardIdx >= 0 ? standardIdx : 0);
+  }
+
+  const oldToNewIndex = new Map(keepIndices.map((oldIdx, newIdx) => [oldIdx, newIdx]));
+  const compactInstances = keepIndices.map((idx) => instances[idx]).filter(Boolean);
+  const compactMeta = keepIndices.map((idx) => instanceMeta[idx]).filter(Boolean);
+  const compactPlacementsByPlate = keepIndices.map((oldIdx, newIdx) =>
+    (solution.placementsByPlate[oldIdx] || []).map((placement) => ({
+      ...placement,
+      plateIdx: newIdx
+    }))
+  );
+  const compactPlacements = (Array.isArray(solution.placements) ? solution.placements : [])
+    .filter((placement) => oldToNewIndex.has(placement?.plateIdx))
+    .map((placement) => ({ ...placement, plateIdx: oldToNewIndex.get(placement.plateIdx) }));
+  const usedArea = Number.isFinite(solution.usedArea)
+    ? solution.usedArea
+    : compactPlacements.reduce((sum, placement) => sum + (Number(placement.w ?? placement.width) || 0) * (Number(placement.h ?? placement.height) || 0), 0);
+  const totalArea = compactInstances.reduce((sum, instance) => sum + (instance.sw * instance.sh), 0);
+  const wasteArea = Math.max(0, totalArea - usedArea);
+  const leftovers = Array.isArray(solution.leftovers) ? solution.leftovers : [];
+
+  solution.placements = compactPlacements;
+  solution.placementsByPlate = compactPlacementsByPlate;
+  solution.usedArea = usedArea;
+  solution.totalArea = totalArea;
+  solution.wasteArea = wasteArea;
+  solution.baseScore = wasteArea;
+  solution.score = wasteArea + (leftovers.length ? totalArea * leftovers.length * 100 : 0);
+  if (Array.isArray(solution.instances)) solution.instances = compactInstances;
+  if (Array.isArray(solution.instanceMeta)) solution.instanceMeta = compactMeta;
+
+  const standardUsage = new Map();
+  compactMeta.forEach((meta) => {
+    const rowIdx = meta?.plateRowIdx ?? meta?.plateRow;
+    if (rowIdx != null && plateRows[rowIdx]?.type !== 'special') {
+      standardUsage.set(rowIdx, (standardUsage.get(rowIdx) || 0) + 1);
+    }
+  });
+  plateRows.forEach((plate, rowIdx) => {
+    if (plate.type === 'special') {
+      plate.sc = 1;
+      return;
+    }
+    const minCount = plateRows.some((item) => item.type === 'special') ? 0 : 1;
+    plate.sc = Math.max(minCount, standardUsage.get(rowIdx) || 0);
+    const countInput = plate.rowEl?.querySelector('input.plate-c');
+    if (countInput) countInput.value = String(plate.sc);
+  });
+
+  return { solution, instances: compactInstances, instanceMeta: compactMeta };
 }
 
 function reducePlateUsageIfPossible({ instances, instanceMeta, plateRows, initialSolution, initialPieces, runSolver }) {
@@ -3292,7 +3450,10 @@ function reducePlateUsageIfPossible({ instances, instanceMeta, plateRows, initia
 
   plateRows.forEach((row, idx) => {
     const used = usageCounts.has(idx) ? usageCounts.get(idx) : 0;
-    const target = Math.max(1, Math.max(used, rowUsage[idx] || 0));
+    const minCount = row.type === 'special'
+      ? 1
+      : (plateRows.some((plate) => plate.type === 'special') ? 0 : 1);
+    const target = Math.max(minCount, Math.max(used, rowUsage[idx] || 0));
     row.sc = target;
     if (row.rowEl) {
       const input = row.rowEl.querySelector('input.plate-c');
@@ -3404,12 +3565,37 @@ async function solveCutLayoutInternal() {
   // Usar worker si está disponible, sino fallback al método original
   try {
     if (solverWorker && solverWorker.worker) {
-      const workerPayload = buildWorkerPayload(inputs);
-      const result = await solverWorker.solve(workerPayload);
+      const specialRowIdx = inputs.plateRows.findIndex((plate) => plate.type === 'special');
+      let solveInputs = inputs;
+      if (specialRowIdx >= 0) {
+        const standardInstances = inputs.instances.filter((instance) => instance.plateRow !== specialRowIdx);
+        const baseline = await solverWorker.solve(buildWorkerPayload({
+          ...inputs,
+          instances: standardInstances
+        }));
+        const standardPlateLimit = (baseline?.placementsByPlate || [])
+          .filter((placements) => Array.isArray(placements) && placements.length > 0)
+          .length;
+        const specialInstance = inputs.instances.find((instance) => instance.plateRow === specialRowIdx);
+        const limitedStandardInstances = standardInstances.slice(0, standardPlateLimit);
+        solveInputs = {
+          ...inputs,
+          instances: [specialInstance, ...limitedStandardInstances].filter(Boolean)
+        };
+      }
+
+      const result = await solverWorker.solve(buildWorkerPayload(solveInputs));
       if (result) {
-        lastSuccessfulSolution = result;
-        solverCache.set(cacheKey, result);
-        savePersistentCache(cacheKey, result);
+        const compacted = compactUnusedSolutionPlates(
+          result,
+          result.instances || solveInputs.instances,
+          result.instanceMeta || solveInputs.instanceMeta,
+          solveInputs.plateRows
+        );
+        lastSuccessfulSolution = compacted.solution;
+        solverCache.set(cacheKey, compacted.solution);
+        savePersistentCache(cacheKey, compacted.solution);
+        return compacted.solution;
       }
       return result || lastSuccessfulSolution;
     } else {
@@ -3484,7 +3670,28 @@ function solveCutLayoutInternalUncached(inputs) {
     return maxIdx;
   };
 
+  const specialRowIdx = plateRows.findIndex((plate) => plate.type === 'special');
+  if (specialRowIdx >= 0) {
+    const standardInstances = instances.filter((instance) => instance.plateRow !== specialRowIdx);
+    const baseline = runSolverWithFallback(standardInstances, pieces);
+    const standardPlateLimit = baseline.solution.placementsByPlate
+      .filter((placements) => Array.isArray(placements) && placements.length > 0)
+      .length;
+    const specialInstance = instances.find((instance) => instance.plateRow === specialRowIdx);
+    const limitedStandardInstances = standardInstances.slice(0, standardPlateLimit);
+    const limitedInstances = [specialInstance, ...limitedStandardInstances].filter(Boolean);
+    const limitedMeta = limitedInstances.map((instance) => ({
+      plateRowIdx: instance.plateRow
+    }));
+    instances = limitedInstances;
+    instanceMeta = limitedMeta;
+  }
+
   let { solution, pieces: solverPieces } = runSolverWithFallback(instances, pieces);
+  const compacted = compactUnusedSolutionPlates(solution, instances, instanceMeta, plateRows);
+  solution = compacted.solution;
+  instances = compacted.instances;
+  instanceMeta = compacted.instanceMeta;
 
   if (!solution.leftovers.length) {
     const maxPlateIdx = getMaxUsedPlateIdx(solution.placementsByPlate);
@@ -4516,15 +4723,17 @@ function ensureKerfField() {
 }
 
 function makePlateRow(options = {}) {
+  const type = options.type === 'special' ? 'special' : 'standard';
   const readOnlySize = !!options.readOnlySize;
   const widthValue = options.width != null ? options.width : (readOnlySize ? getDefaultPlateWidth() : '');
   const heightValue = options.height != null ? options.height : (readOnlySize ? getDefaultPlateHeight() : '');
 
   const row = document.createElement('div');
   row.className = 'plate-row';
+  row.dataset.plateType = type;
 
   const fW = document.createElement('div'); fW.className = 'field';
-  const lW = document.createElement('label'); lW.textContent = 'Ancho (mm)';
+  const lW = document.createElement('label'); lW.textContent = type === 'special' ? 'Ancho placa especial (mm)' : 'Ancho estándar (mm)';
   const iW = document.createElement('input'); iW.className = 'plate-w'; iW.type = 'number'; iW.min = '0'; iW.step = '1'; iW.placeholder = 'Ej: 2750';
   attachNumericFilter(iW, { allowBlank: false });
   if (widthValue !== '') iW.value = String(widthValue);
@@ -4535,7 +4744,7 @@ function makePlateRow(options = {}) {
   fW.appendChild(lW); fW.appendChild(iW);
 
   const fH = document.createElement('div'); fH.className = 'field';
-  const lH = document.createElement('label'); lH.textContent = 'Alto (mm)';
+  const lH = document.createElement('label'); lH.textContent = type === 'special' ? 'Alto placa especial (mm)' : 'Alto estándar (mm)';
   const iH = document.createElement('input'); iH.className = 'plate-h'; iH.type = 'number'; iH.min = '0'; iH.step = '1'; iH.placeholder = 'Ej: 1830';
   attachNumericFilter(iH, { allowBlank: false });
   if (heightValue !== '') iH.value = String(heightValue);
@@ -4581,12 +4790,19 @@ function makePlateRow(options = {}) {
     });
   }
 
-  const del = document.createElement('button'); del.className = 'btn remove'; del.textContent = 'Eliminar';
-  del.addEventListener('click', () => {
-    row.remove();
-    applyPlatesGate();
-    ensureKerfField();
-  });
+  const del = document.createElement('button');
+  del.className = 'btn remove';
+  del.textContent = 'Eliminar';
+  del.type = 'button';
+  if (type === 'standard') {
+    del.hidden = true;
+  } else {
+    del.addEventListener('click', () => {
+      row.remove();
+      applyPlatesGate();
+      ensureKerfField();
+    });
+  }
 
   const actions = document.createElement('div');
   actions.className = 'plate-actions';
@@ -4632,7 +4848,7 @@ function applyPlatesGate({ skipRecalc = false } = {}) {
 }
 
 function enforceDefaultPlateSize(row) {
-  if (isBackofficeAllowed || canEditPlateSize || !row) return;
+  if (!row || row.dataset.plateType === 'special') return;
   const widthInput = row.querySelector('input.plate-w');
   const heightInput = row.querySelector('input.plate-h');
   const quantityInput = row.querySelector('input.plate-c');
@@ -4658,22 +4874,26 @@ function enforceDefaultPlateSize(row) {
   }
 }
 
+function ensureStandardPlateRow() {
+  if (!platesEl || platesEl.querySelector('.plate-row[data-plate-type="standard"]')) return null;
+  const row = makePlateRow({
+    type: 'standard',
+    readOnlySize: true,
+    width: DEFAULT_PLATE_WIDTH_USER,
+    height: DEFAULT_PLATE_HEIGHT_USER
+  });
+  platesEl.appendChild(row);
+  enforceDefaultPlateSize(row);
+  ensureKerfField();
+  return row;
+}
+
 if (platesEl && addPlateBtn) {
-  const appendPlateRow = () => {
-    const allowCustomPlateSize = isBackofficeAllowed || canEditPlateSize;
-    const rowOptions = allowCustomPlateSize
-      ? (isBackofficeAllowed ? {} : {
-        width: getDefaultPlateWidth(),
-        height: getDefaultPlateHeight()
-      })
-      : {
-        readOnlySize: true,
-        width: getDefaultPlateWidth(),
-        height: getDefaultPlateHeight()
-      };
-    const row = makePlateRow(rowOptions);
-    platesEl.appendChild(row);
-    enforceDefaultPlateSize(row);
+  const appendSpecialPlateRow = () => {
+    if (platesEl.querySelector('.plate-row[data-plate-type="special"]')) return null;
+    ensureStandardPlateRow();
+    const row = makePlateRow({ type: 'special' });
+    platesEl.prepend(row);
     ensureKerfField();
     applyPlatesGate();
     return row;
@@ -4681,9 +4901,12 @@ if (platesEl && addPlateBtn) {
 
   addPlateBtn.addEventListener('click', () => {
     if (!plateMaterialSelect || !plateMaterialSelect.value) return;
-    appendPlateRow();
+    appendSpecialPlateRow();
   });
-  ensureDefaultRows();
+  if (plateMaterialSelect?.value) {
+    ensureStandardPlateRow();
+    applyPlatesGate({ skipRecalc: true });
+  }
 }
 
 initRemoteSynchronisation();
@@ -4714,7 +4937,7 @@ toggleActionButtons(isSheetComplete());
 
 // -------- Persistencia (Guardar/Cargar) --------
 function serializeState() {
-  const plates = getPlates();
+  const plates = getPlates().map((plate) => ({ ...plate, sc: 1 }));
   const rows = getRows().map((row) => {
     const [qtyInput, widthInput, heightInput] = getRowCoreInputs(row);
     const qty = parseFloat(qtyInput?.value) || 0;
@@ -5242,6 +5465,25 @@ function normalizeSavedSolution(savedSolution) {
 }
 
 function loadState(state) {
+  const sourcePlates = Array.isArray(state?.plates) ? state.plates : [];
+  const customPlateSpecs = sourcePlates
+    .filter((plate) => {
+      const width = toFinitePositive(plate?.sw, 0);
+      const height = toFinitePositive(plate?.sh, 0);
+      return width > 0 && height > 0 && !isStandardPlateDimensions(width, height);
+    })
+    .map((plate) => ({
+      width: toFinitePositive(plate.sw, 0),
+      height: toFinitePositive(plate.sh, 0),
+      count: Math.max(1, parseInt(plate.sc, 10) || 1)
+    }));
+  const distinctCustomSpecs = new Set(customPlateSpecs.map((plate) => `${plate.width}x${plate.height}`));
+  if (distinctCustomSpecs.size > 1 || customPlateSpecs.length > 1 ||
+      customPlateSpecs.some((plate) => plate.count > 1)) {
+    alert('Este proyecto tiene más de una placa especial. La nueva configuración permite una sola; el archivo no se cargó para evitar perder datos.');
+    return false;
+  }
+
   if (layoutRecalcTimer) {
     clearTimeout(layoutRecalcTimer);
     layoutRecalcTimer = null;
@@ -5252,6 +5494,9 @@ function loadState(state) {
   }
   immediateRecalcNeeded = false;
   layoutRecalcPending = false;
+  lastSuccessfulSolution = null;
+  pendingSavedSolutionForNextSolve = null;
+  pendingSavedSolutionRetryCount = 0;
   hardwareCart = normalizeHardwareSelections(state.hardwareSelections);
 
   // Al cargar proyecto, partir de estado visual clásico para evitar que
@@ -5298,48 +5543,53 @@ function loadState(state) {
       : currentMaterialName;
   }
   // Cargar placas
-  if (platesEl && Array.isArray(state.plates)) {
-    state.plates.forEach((p, plateIdx) => {
-      if (!isBackofficeAllowed && plateIdx > 0) return; // Solo una placa para usuarios finales
-      const parsedWidth = Number(p?.sw);
-      const parsedHeight = Number(p?.sh);
-      const storedWidth = Number.isFinite(parsedWidth) ? parsedWidth : defaultPlateWidth;
-      const storedHeight = Number.isFinite(parsedHeight) ? parsedHeight : defaultPlateHeight;
-      const allowCustomPlateSize = isBackofficeAllowed || canEditPlateSize;
-      const rowOptions = allowCustomPlateSize
-        ? (isBackofficeAllowed ? {} : { width: storedWidth, height: storedHeight })
-        : { readOnlySize: true, width: defaultPlateWidth, height: defaultPlateHeight };
-      const r = makePlateRow(rowOptions);
+  if (platesEl) {
+    const standardPlate = sourcePlates.find((plate) => {
+      const width = toFinitePositive(plate?.sw, defaultPlateWidth);
+      const height = toFinitePositive(plate?.sh, defaultPlateHeight);
+      return isStandardPlateDimensions(width, height);
+    });
+    const specialPlate = customPlateSpecs[0];
+    const platesToRestore = [];
+    if (standardPlate || state.material || sourcePlates.length) {
+      platesToRestore.push({
+        ...(standardPlate || {}),
+        type: 'standard',
+        sw: DEFAULT_PLATE_WIDTH_USER,
+        sh: DEFAULT_PLATE_HEIGHT_USER,
+        sc: 1
+      });
+    }
+    if (specialPlate) {
+      platesToRestore.push({
+        ...sourcePlates.find((plate) =>
+          Math.abs(toFinitePositive(plate?.sw, 0) - specialPlate.width) <= 0.1 &&
+          Math.abs(toFinitePositive(plate?.sh, 0) - specialPlate.height) <= 0.1
+        ),
+        type: 'special',
+        sw: specialPlate.width,
+        sh: specialPlate.height,
+        sc: 1
+      });
+    }
+    platesToRestore.forEach((p) => {
+      const isSpecial = p.type === 'special';
+      const r = makePlateRow({
+        type: p.type,
+        readOnlySize: !isSpecial,
+        width: p.sw,
+        height: p.sh
+      });
       const widthInput = r.querySelector('input.plate-w');
       const heightInput = r.querySelector('input.plate-h');
       const countInput = r.querySelector('input.plate-c');
       if (widthInput) {
-        if (isBackofficeAllowed) {
-          widthInput.value = String(p.sw || '');
-        } else if (canEditPlateSize) {
-          widthInput.value = String(storedWidth);
-          widthInput.disabled = false;
-          widthInput.classList.remove('readonly-input');
-        } else {
-          widthInput.value = String(defaultPlateWidth);
-          widthInput.disabled = true;
-          widthInput.classList.add('readonly-input');
-        }
+        widthInput.value = String(p.sw);
       }
       if (heightInput) {
-        if (isBackofficeAllowed) {
-          heightInput.value = String(p.sh || '');
-        } else if (canEditPlateSize) {
-          heightInput.value = String(storedHeight);
-          heightInput.disabled = false;
-          heightInput.classList.remove('readonly-input');
-        } else {
-          heightInput.value = String(defaultPlateHeight);
-          heightInput.disabled = true;
-          heightInput.classList.add('readonly-input');
-        }
+        heightInput.value = String(p.sh);
       }
-      if (countInput) countInput.value = String(p.sc || 1);
+      if (countInput) countInput.value = '1';
       if (p.trim) {
         const tmm = r.querySelector('input.trim-mm');
         if (tmm) tmm.value = String(p.trim.mm || 0);
@@ -5350,15 +5600,14 @@ function loadState(state) {
         if (sides[3]) sides[3].checked = !!p.trim.left;
       }
       platesEl.appendChild(r);
-      enforceDefaultPlateSize(r);
     });
-    if (!isBackofficeAllowed && !canEditPlateSize) {
-      const plateRows = platesEl.querySelectorAll('.plate-row');
-      if (!plateRows.length) {
-        const fallbackRow = makePlateRow({ readOnlySize: true, width: defaultPlateWidth, height: defaultPlateHeight });
-        platesEl.appendChild(fallbackRow);
-        enforceDefaultPlateSize(fallbackRow);
-      }
+    const specialRow = platesEl.querySelector('.plate-row[data-plate-type="special"]');
+    const standardRow = platesEl.querySelector('.plate-row[data-plate-type="standard"]');
+    if (specialRow && standardRow) {
+      platesEl.insertBefore(specialRow, standardRow);
+    }
+    if (!platesEl.querySelector('.plate-row[data-plate-type="standard"]') && state.material) {
+      ensureStandardPlateRow();
     }
   }
 
@@ -5424,10 +5673,26 @@ function loadState(state) {
     });
   }
 
+  if (layoutRecalcTimer) {
+    clearTimeout(layoutRecalcTimer);
+    layoutRecalcTimer = null;
+  }
+  if (deferredRecalcTimer) {
+    clearTimeout(deferredRecalcTimer);
+    deferredRecalcTimer = null;
+  }
+  immediateRecalcNeeded = false;
+  layoutRecalcPending = false;
+
   ensureKerfField();
 
   const normalizedSavedSolution = normalizeSavedSolution(state.savedSolution);
-  const canUseSavedSolution = !!(normalizedSavedSolution && isValidSavedSolutionWithCurrentPlates(normalizedSavedSolution));
+  const hasSpecialPlate = getPlates().some((plate) => plate.type === 'special');
+  const canUseSavedSolution = !!(
+    !hasSpecialPlate &&
+    normalizedSavedSolution &&
+    isValidSavedSolutionWithCurrentPlates(normalizedSavedSolution)
+  );
 
   if (canUseSavedSolution) {
     console.log('🔄 Usando solución guardada del JSON');
@@ -5599,58 +5864,69 @@ function isValidSavedSolutionWithCurrentPlates(savedSolution) {
   }
 
   const savedPlates = normalized.instances.length;
-  const totalCurrentInstances = currentPlates.reduce((sum, plate) => sum + Math.max(1, plate?.sc || 1), 0);
-  const dimensionsMatch = (a, b) => {
-    const aW = Number(a?.sw ?? a?.width);
-    const aH = Number(a?.sh ?? a?.height);
-    const bW = Number(b?.sw ?? b?.width);
-    const bH = Number(b?.sh ?? b?.height);
-    return Math.abs(aW - bW) <= 0.1 && Math.abs(aH - bH) <= 0.1;
-  };
+  const standardMatches = (plate) =>
+    Math.abs(Number(plate?.sw ?? plate?.width) - DEFAULT_PLATE_WIDTH_USER) <= 0.1 &&
+    Math.abs(Number(plate?.sh ?? plate?.height) - DEFAULT_PLATE_HEIGHT_USER) <= 0.1;
+  const specialPlate = currentPlates.find((plate) => plate.type === 'special');
+  const specialMatches = (plate) =>
+    specialPlate &&
+    Math.abs(Number(plate?.sw ?? plate?.width) - specialPlate.sw) <= 0.1 &&
+    Math.abs(Number(plate?.sh ?? plate?.height) - specialPlate.sh) <= 0.1;
+  const maxStandardCount = Math.max(1, getRows().reduce((sum, row) => {
+    const [quantityInput] = getRowCoreInputs(row);
+    return sum + Math.max(0, parseInt(quantityInput?.value ?? '', 10) || 0);
+  }, 0));
 
-  console.log('🔍 DEBUG: Comparando con placas actuales:', {
-    currentPlates: currentPlates.length,
-    totalCurrentInstances,
-    savedPlates,
-    match: totalCurrentInstances === savedPlates,
-    currentPlatesDetails: currentPlates.map((p, i) => ({ i, sw: p.sw, sh: p.sh, sc: p.sc })),
-    savedInstancesDetails: normalized.instances.map((inst, i) => ({ i, sw: inst.sw, sh: inst.sh }))
-  });
+  let matchedSpecialCount = 0;
+  let matchedStandardCount = 0;
+  for (const instance of normalized.instances) {
+    if (specialMatches(instance)) {
+      matchedSpecialCount++;
+    } else if (standardMatches(instance)) {
+      matchedStandardCount++;
+    } else {
+      console.log('❌ DEBUG: Dimensiones guardadas no permitidas en la configuración actual', instance);
+      return false;
+    }
+  }
 
-  if (totalCurrentInstances === savedPlates) {
-    const expandedCurrentInstances = [];
-    currentPlates.forEach((plate) => {
-      const count = Math.max(1, plate?.sc || 1);
-      for (let i = 0; i < count; i++) {
-        expandedCurrentInstances.push({ sw: Number(plate.sw), sh: Number(plate.sh) });
-      }
+  if (normalized.placementsByPlate.length !== savedPlates ||
+      matchedSpecialCount !== (specialPlate ? 1 : 0) ||
+      matchedStandardCount > maxStandardCount ||
+      (specialPlate && !specialMatches(normalized.instances[0]))) {
+    console.log('❌ DEBUG: Cantidad de placas guardadas incompatible con la configuración', {
+      saved: savedPlates,
+      savedPlacementGroups: normalized.placementsByPlate.length,
+      matchedSpecialCount,
+      matchedStandardCount,
+      maxStandardCount
     });
+    return false;
+  }
 
-    for (let idx = 0; idx < savedPlates; idx++) {
-      const current = expandedCurrentInstances[idx];
-      const saved = normalized.instances[idx];
-      if (!current || !saved || !dimensionsMatch(current, saved)) {
-        console.log(`❌ DEBUG: Dimensiones de instancia ${idx} no coinciden`, { current, saved });
+  for (let idx = 0; idx < savedPlates; idx++) {
+    const current = normalized.instances[idx];
+    const saved = normalized.instances[idx];
+    const placements = normalized.placementsByPlate[idx];
+    for (const placement of placements) {
+      const x = Number(placement.x);
+      const y = Number(placement.y);
+      const width = Number(placement.width);
+      const height = Number(placement.height);
+      if (
+        !Number.isFinite(x) || !Number.isFinite(y) ||
+        !Number.isFinite(width) || !Number.isFinite(height) ||
+        x < -0.1 || y < -0.1 ||
+        x + width > current.sw + 0.1 ||
+        y + height > current.sh + 0.1
+      ) {
+        console.log(`❌ DEBUG: Corte guardado fuera de los límites de la placa ${idx + 1}`, {
+          placement: { x, y, width, height },
+          plate: current
+        });
         return false;
       }
     }
-  } else {
-    const allSavedInstancesCompatible = normalized.instances.every((saved) =>
-      currentPlates.some((current) => dimensionsMatch(current, saved))
-    );
-
-    if (!allSavedInstancesCompatible) {
-      console.log('❌ DEBUG: Instancias guardadas incompatibles con dimensiones de placas actuales');
-      return false;
-    }
-
-    const hasAnyPlacement = normalized.placementsByPlate.some((plate) => Array.isArray(plate) && plate.length > 0);
-    if (!hasAnyPlacement) {
-      console.log('❌ DEBUG: Hay mismatch de instancias y no hay placements para usar savedSolution');
-      return false;
-    }
-
-    console.log('⚠️ DEBUG: Instancias no coinciden en cantidad; se acepta savedSolution por compatibilidad dimensional.');
   }
   
   console.log('✅ DEBUG: Solución guardada es válida con placas actuales');
@@ -5713,6 +5989,13 @@ function collectPiecesFromState(state) {
 }
 
 async function renderAdvancedLayoutForCurrentStrategy() {
+  if (hasMixedPlateDimensions()) {
+    showingAdvancedOptimization = false;
+    await renderSheetOverview();
+    await updateLayoutReuseRecommendation();
+    return;
+  }
+
   const strategy = getSelectedLayoutStrategy();
   if (strategy === 'horizontal') {
     await renderWithAdvancedOptimizer();
@@ -7387,6 +7670,7 @@ if (plateMaterialSelect) {
     if (value) {
       currentMaterialName = value;
       try { localStorage.setItem(LAST_MATERIAL_KEY, currentMaterialName); } catch (_) {}
+      ensureStandardPlateRow();
       const requestId = ++materialImageRequestId;
       const showPreview = async () => {
         let materialImage = '';
@@ -9051,7 +9335,7 @@ function recalcEdgebanding() {
   updateCostSummary();
   
   // Actualizar lista combinada (con datos de colocación)
-  updateRowSummaryUI();
+  updatePlateSummaryUI();
 }
 
 /**
@@ -9524,6 +9808,118 @@ async function renderSheetOverview() {
     hatchRect.setAttribute('stroke', 'none');
     svg.insertBefore(hatchRect, label.nextSibling);
 
+    const cutLine = (x1, y1, x2, y2, color) => {
+      if (![x1, y1, x2, y2].every(Number.isFinite)) return;
+      if (Math.hypot(x2 - x1, y2 - y1) <= 1) return;
+      const line = document.createElementNS(svgNS, 'line');
+      line.setAttribute('class', 'cut-line');
+      line.setAttribute('x1', String(ox + x1 * scale));
+      line.setAttribute('y1', String(oy + y1 * scale));
+      line.setAttribute('x2', String(ox + x2 * scale));
+      line.setAttribute('y2', String(oy + y2 * scale));
+      line.setAttribute('stroke', color);
+      line.setAttribute('stroke-width', '1');
+      line.setAttribute('stroke-dasharray', '5,5');
+      line.setAttribute('opacity', '0.7');
+      line.setAttribute('pointer-events', 'none');
+      svg.appendChild(line);
+    };
+    const getPlacementBounds = (placement) => {
+      const x = Number(placement.x);
+      const y = Number(placement.y);
+      const width = Number(placement.w ?? placement.width);
+      const height = Number(placement.h ?? placement.height);
+      if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+      return { left: x, top: y, right: x + width, bottom: y + height };
+    };
+    const placementBounds = placed.map(getPlacementBounds);
+    const validBounds = placementBounds.filter(Boolean);
+    const preferHorizontalBands = ['horizontal', 'band'].includes(
+      String(instance.layoutStrategy || getSelectedLayoutStrategy()).toLowerCase()
+    );
+    const addGuillotineCuts = (region, regionPlacements) => {
+      if (regionPlacements.length < 2) return;
+
+      const candidates = [];
+      for (const orientation of ['vertical', 'horizontal']) {
+        const boundaries = Array.from(new Set(regionPlacements.flatMap((bounds) =>
+          orientation === 'vertical' ? [bounds.left, bounds.right] : [bounds.top, bounds.bottom]
+        ))).sort((a, b) => a - b);
+
+        for (let idx = 0; idx < boundaries.length - 1; idx++) {
+          const gapStart = boundaries[idx];
+          const gapEnd = boundaries[idx + 1];
+          if (gapEnd - gapStart <= 1) continue;
+          const position = (gapStart + gapEnd) / 2;
+          const firstGroup = [];
+          const secondGroup = [];
+          let crossesPlacement = false;
+
+          for (const bounds of regionPlacements) {
+            const start = orientation === 'vertical' ? bounds.left : bounds.top;
+            const end = orientation === 'vertical' ? bounds.right : bounds.bottom;
+            if (end <= position + 0.1) {
+              firstGroup.push(bounds);
+            } else if (start >= position - 0.1) {
+              secondGroup.push(bounds);
+            } else {
+              crossesPlacement = true;
+              break;
+            }
+          }
+          if (crossesPlacement || !firstGroup.length || !secondGroup.length) continue;
+
+          candidates.push({
+            orientation,
+            position,
+            firstGroup,
+            secondGroup,
+            balance: Math.min(firstGroup.length, secondGroup.length),
+            gap: gapEnd - gapStart
+          });
+        }
+      }
+
+      candidates.sort((a, b) => {
+        const aPreferred = (a.orientation === 'horizontal') === preferHorizontalBands;
+        const bPreferred = (b.orientation === 'horizontal') === preferHorizontalBands;
+        if (aPreferred !== bPreferred) return aPreferred ? -1 : 1;
+        if (a.balance !== b.balance) return b.balance - a.balance;
+        return a.gap - b.gap;
+      });
+
+      const cut = candidates[0];
+      if (!cut) return;
+
+      if (cut.orientation === 'vertical') {
+        cutLine(cut.position, region.top, cut.position, region.bottom, '#10b981');
+        addGuillotineCuts(
+          { ...region, right: cut.position },
+          cut.firstGroup
+        );
+        addGuillotineCuts(
+          { ...region, left: cut.position },
+          cut.secondGroup
+        );
+        return;
+      }
+
+      cutLine(region.left, cut.position, region.right, cut.position, '#3b82f6');
+      addGuillotineCuts(
+        { ...region, bottom: cut.position },
+        cut.firstGroup
+      );
+      addGuillotineCuts(
+        { ...region, top: cut.position },
+        cut.secondGroup
+      );
+    };
+
+    addGuillotineCuts(
+      { left: 0, top: 0, right: instance.sw, bottom: instance.sh },
+      validBounds
+    );
+
     if (plateIdx === instances.length - 1 && leftoverPieces.length) {
       const warn = document.createElementNS(svgNS, 'text');
       warn.setAttribute('class', 'sheet-dims');
@@ -9581,6 +9977,7 @@ async function renderSheetOverview() {
       summaryPlateCostEl.textContent = 'Costo placas: $0 (sin placas utilizadas)';
     }
   }
+  updateCostSummary();
   if (summaryReqEl) summaryReqEl.textContent = `Cortes pedidos: ${totalRequested}`;
   if (summaryPlacedEl) summaryPlacedEl.textContent = `Colocados: ${piecesCount}`;
   if (summaryLeftEl) summaryLeftEl.textContent = `Fuera: ${Math.max(0, totalRequested - piecesCount)}`;
@@ -9618,7 +10015,7 @@ async function renderSheetOverview() {
     const left = Math.max(0, req - plc);
     lastPlacementByRow.set(i, { requested: req, placed: plc, left });
   }
-  updateRowSummaryUI();
+  updatePlateSummaryUI(solution);
   
   } catch (error) {
     console.error('Error en renderSheetOverview:', error);
@@ -9723,7 +10120,7 @@ if (themeToggleBtn) {
     // Recolorear y redibujar
     reindexRows();
     scheduleLayoutRecalc({ immediate: true });
-    updateRowSummaryUI();
+    updatePlateSummaryUI();
   });
 }
 loadTheme();

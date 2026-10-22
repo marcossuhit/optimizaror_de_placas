@@ -830,7 +830,7 @@ function solveCutLayoutWorker(inputs) {
 
   // Calcular resultados finales
   const instanceMeta = instances.map(inst => ({
-    plateRow: inst.plateRow || null,
+    plateRow: Number.isInteger(inst.plateRow) ? inst.plateRow : null,
     material: inst.material || ''
   }));
 
